@@ -172,6 +172,7 @@ final class StatusBarController: NSObject {
     }
 
     static let hideMenuBarIconKey = "HideMenuBarIcon"
+    static let launchSilentlyKey = "LaunchSilently"
     private static let hideIconPromptShownKey = "HideMenuBarIconPromptShown"
 
     static func setMenuBarIconHidden(_ hidden: Bool) {
@@ -1212,6 +1213,12 @@ final class StatusBarController: NSObject {
         loginItem.state = launchAtLoginManager.isEnabled ? .on : .off
         menu.addItem(loginItem)
 
+        let silentItem = NSMenuItem(title: Strings.menuSilentStart, action: #selector(toggleSilentStart), keyEquivalent: "")
+        silentItem.target = self
+        silentItem.state = UserDefaults.standard.bool(forKey: Self.launchSilentlyKey) ? .on : .off
+        silentItem.toolTip = Strings.menuSilentStartTooltip
+        menu.addItem(silentItem)
+
         let toastItem = NSMenuItem(title: Strings.toastOnResetLabel, action: #selector(toggleResetToast), keyEquivalent: "")
         toastItem.target = self
         toastItem.state = WeeklyLimitResetDetector.toastEnabled() ? .on : .off
@@ -1225,12 +1232,17 @@ final class StatusBarController: NSObject {
         menu.addItem(.separator())
 
         // ── Group 4: System & App Info ──
+        // "Check for Updates" is unavailable in Debug (Dev variant) builds — it
+        // would install the official app over the dev one. The tag-keyed update
+        // observer below self-guards when the item is absent.
+        #if !DEBUG
         let updateTitle = UpdateChecker.shared.statusText ?? Strings.menuCheckForUpdates
         let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdates), keyEquivalent: "u")
         updateItem.tag = Self.updateMenuItemTag
         updateItem.target = self
         updateItem.isEnabled = !UpdateChecker.shared.isBusy
         menu.addItem(updateItem)
+        #endif
 
         let version = UpdateChecker.shared.currentVersion()
         let aboutItem = NSMenuItem(title: "TokenTracker v\(version)", action: #selector(openAbout), keyEquivalent: "")
@@ -1399,6 +1411,14 @@ final class StatusBarController: NSObject {
 
     @objc private func toggleLaunchAtLogin() {
         launchAtLoginManager.toggle()
+    }
+
+    @objc private func toggleSilentStart() {
+        let defaults = UserDefaults.standard
+        // The menu is rebuilt from scratch on every open (buildMenu), so the
+        // checkmark reflects this on next open; no in-place refresh (spec §6.1).
+        defaults.set(!defaults.bool(forKey: Self.launchSilentlyKey),
+                     forKey: Self.launchSilentlyKey)
     }
 
     @objc private func toggleDesktopPet() {

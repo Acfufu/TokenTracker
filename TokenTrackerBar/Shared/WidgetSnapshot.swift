@@ -13,6 +13,18 @@ import Foundation
 // MARK: - App Group constants
 
 public enum WidgetSharedConstants {
+#if DEBUG
+    /// Shared App Group identifier for the Dev variant. Must be added to *both*
+    /// targets' entitlements (`com.apple.security.application-groups`) — the dev
+    /// suite needs it just as much as the production one.
+    public static let appGroupIdentifier = "group.com.tokentracker.bar.dev"
+
+    /// Bundle identifier of the Dev widget extension. Used by the host app to
+    /// write snapshot files directly into the widget's sandbox container as
+    /// a fallback path for ad-hoc / dev signed builds where the App Group
+    /// container is not actually provisioned by the system.
+    public static let widgetBundleIdentifier = "com.tokentracker.bar.dev.widget"
+#else
     /// Shared App Group identifier. Must be added to *both* targets'
     /// entitlements (`com.apple.security.application-groups`).
     public static let appGroupIdentifier = "group.com.tokentracker.bar"
@@ -22,6 +34,7 @@ public enum WidgetSharedConstants {
     /// a fallback path for ad-hoc / dev signed builds where the App Group
     /// container is not actually provisioned by the system.
     public static let widgetBundleIdentifier = "com.tokentracker.bar.widget"
+#endif
 
     /// Filename of the snapshot inside the App Group container.
     public static let snapshotFilename = "widget-snapshot.json"

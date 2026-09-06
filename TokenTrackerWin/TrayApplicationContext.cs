@@ -40,6 +40,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _petCharacterEmber;
     private readonly ToolStripMenuItem _petCharacterBot;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _silentItem;
+    private readonly bool _silentEffective;
     private readonly ToolStripMenuItem _checkUpdatesItem;
 
     // Right-click-the-pet context menu (separate ToolStrip items — an item can't
@@ -87,8 +89,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private Task? _summaryRefreshTask;
     private bool _summaryRefreshRequested;
 
-    public TrayApplicationContext(bool showPetOnLaunch = false)
+    public TrayApplicationContext(bool showPetOnLaunch = false, bool silentEffective = false)
     {
+        _silentEffective = silentEffective;
         _poller = new UsagePoller(() => _server.BaseUrl);
         _menuRenderer = new TrayMenuRenderer(_menuPalette);
 
@@ -160,6 +163,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _startupItem = CreateMenuItem("", OnToggleStartup);
         _startupItem.Checked = LaunchAtStartup.IsEnabled;
         _startupItem.CheckOnClick = false;
+        _silentItem = CreateMenuItem("", OnToggleSilentStart);
+        _silentItem.Checked = SilentStart.Enabled;
+        _silentItem.CheckOnClick = false;
         _checkUpdatesItem = CreateMenuItem("", (_, _) => OnCheckUpdatesClicked());
         _starItem = CreateMenuItem("", (_, _) => OpenInBrowser(Constants.GitHubUrl));
         _quitItem = CreateMenuItem("", (_, _) => Quit());
@@ -184,6 +190,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_petCharacterItem);
         _menu.Items.Add(CreateSeparator());
         _menu.Items.Add(_startupItem);
+        _menu.Items.Add(_silentItem);
         _menu.Items.Add(_checkUpdatesItem);
         _menu.Items.Add(_starItem);
         _menu.Items.Add(CreateSeparator());
@@ -239,7 +246,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // auto-opens. A stored preference (user toggled the pet at least once) always
         // wins; only first launches fall back to the show-on-manual-run default.
         // Deferred onto the dispatcher so it shows once the message pump is running.
-        if (PetWindow.StoredVisible ?? showPetOnLaunch)
+        if (!_silentEffective && (PetWindow.StoredVisible ?? showPetOnLaunch))
         {
             _uiDispatcher.BeginInvoke(new Action(() =>
             {
@@ -344,6 +351,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         UpdatePetSizeChecks();
         UpdatePetCharacterChecks();
         _startupItem.Text = _strings.LaunchAtLogin;
+        _silentItem.Text = _strings.SilentStart;
         _starItem.Text = _strings.StarOnGitHub;
         _quitItem.Text = _strings.Quit;
         RefreshUpdateMenuItem();
@@ -411,11 +419,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         ApplyLocaleToMenu();
     }
 
-    private void OpenDashboard()
+    internal void OpenDashboard() => PostToUi(() =>
     {
         EnsureDashboard();
         _dashboard!.ShowDashboard();
-    }
+    });
 
     private void ToggleDashboard()
     {
@@ -732,6 +740,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         LaunchAtStartup.Toggle();
         _startupItem.Checked = LaunchAtStartup.IsEnabled;
+    }
+
+    private void OnToggleSilentStart(object? sender, EventArgs e)
+    {
+        var value = !_silentItem.Checked;
+        SilentStart.Set(value);
+        _silentItem.Checked = value;
     }
 
     /// <summary>

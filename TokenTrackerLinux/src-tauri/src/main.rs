@@ -65,6 +65,9 @@ where
 
 /// Surface a startup failure in the loading page instead of leaving the user
 /// with a window stuck on "Starting TokenTracker…".
+///
+/// Known boundary (spec §7): under Silent Start the window is hidden, so this
+/// failure surface is invisible too — accepted; the tray stays functional.
 fn report_startup_failure(app: &AppHandle, window: &WebviewWindow, error: &str) {
     eprintln!("[TokenTracker] {error}");
     // Serialize through serde_json so the message is a JS string literal and
@@ -270,7 +273,10 @@ fn main() {
 
             // Create the window up front so it paints `src/index.html` as a
             // loading screen and the tray menu has a "main" window to raise
-            // while the server is still coming up.
+            // while the server is still coming up. Under Silent Start the
+            // window is created hidden — it still loads and navigates in the
+            // background, so the first `show()` finds a warm dashboard.
+            let silent_start = tokentracker_linux::settings::silent_start();
             let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -280,6 +286,7 @@ fn main() {
             .title("TokenTracker")
             .inner_size(1180.0, 820.0)
             .min_inner_size(960.0, 640.0)
+            .visible(!silent_start)
             .build()?;
 
             let handle = app.handle().clone();

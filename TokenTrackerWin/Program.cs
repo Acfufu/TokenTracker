@@ -15,7 +15,9 @@ internal static class Program
         var deepLink = FindDeepLink(args);
         var launchedAtStartup = args.Any(a =>
             string.Equals(a, LaunchAtStartup.StartupArgument, StringComparison.OrdinalIgnoreCase));
-        Diag.Log("program", $"Main argc={args.Length} deepLink={(deepLink ?? "<none>")} startup={launchedAtStartup}");
+        // Silent Start (persisted toggle) OR the --startup tag: launches stay in the tray.
+        var silentEffective = SilentStart.Enabled || launchedAtStartup;
+        Diag.Log("program", $"Main argc={args.Length} deepLink={(deepLink ?? "<none>")} startup={launchedAtStartup} silent={silentEffective}");
 
         using var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var isNew);
         Diag.Log("program", $"mutex isNew={isNew}");
@@ -23,10 +25,16 @@ internal static class Program
         {
             // Already running: if launched to handle a deep link, hand it to the live
             // instance. Either way a second copy must exit (single-instance app).
+            // A --startup second instance (duplicate login item) stays quiet — no "show".
             if (deepLink is not null)
             {
                 var ok = SingleInstance.TryForwardToPrimary(deepLink);
                 Diag.Log("program", $"forwarded deepLink to primary: {ok}");
+            }
+            else if (!launchedAtStartup)
+            {
+                var shown = SingleInstance.TryForwardToPrimary("show");
+                Diag.Log("program", $"forwarded show to primary: {shown}");
             }
             return;
         }
@@ -71,16 +79,23 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         // Show the desktop pet on a normal launch (manual run or post-install), but stay
-        // quietly in the tray when Windows auto-starts us at login or when we were only
-        // spun up to relay an OAuth deep link (the pet then restores only if it was open
-        // last exit). The dashboard no longer auto-opens — the pet is the visible presence.
+        // quietly in the tray when Windows auto-starts us at login, when we were only
+        // spun up to relay an OAuth deep link, or when Silent Start is enabled (no pet,
+        // no dashboard — regardless of the pet's stored visibility). The dashboard no
+        // longer auto-opens — the pet is the visible presence.
         var showPetOnLaunch = deepLink is null && !launchedAtStartup;
-        var ctx = new TrayApplicationContext(showPetOnLaunch);
+        var ctx = new TrayApplicationContext(showPetOnLaunch, silentEffective);
         trayContext = ctx;
 
-        // Listen for deep links forwarded by secondary launches.
+        // Listen for deep links forwarded by secondary launches. "show" (a bare second
+        // launch — user intent) surfaces the dashboard; OpenDashboard marshals itself
+        // onto the UI thread because this callback arrives on a pipe thread.
         using var listenerCts = new CancellationTokenSource();
-        SingleInstance.StartListener(ctx.HandleDeepLink, listenerCts.Token);
+        SingleInstance.StartListener(payload =>
+        {
+            if (payload == "show") { ctx.OpenDashboard(); }
+            else { ctx.HandleDeepLink(payload); }
+        }, listenerCts.Token);
 
         // Cold start via a deep link (app wasn't already running): handle it once ready.
         if (deepLink is not null) ctx.HandleDeepLink(deepLink);

@@ -21,9 +21,13 @@ struct TokenTrackerBarApp: App {
                         NSApp.activate(ignoringOtherApps: true)
                         NSApp.orderFrontStandardAboutPanel(nil)
                     }
+                    // "Check for Updates" is unavailable in Debug (Dev variant)
+                    // builds — it would install the official app over the dev one.
+                    #if !DEBUG
                     Button(Strings.menuCheckForUpdates) {
                         UpdateChecker.shared.check(silent: false)
                     }
+                    #endif
                 }
                 CommandGroup(replacing: .appSettings) {
                     Button(Strings.menuSettings + "…") {
@@ -148,8 +152,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // A normal Finder/Dock launch should behave like opening an app, while
         // an SMAppService login launch should remain a quiet menu bar startup.
-        if NSAppleEventManager.shared().currentAppleEvent?
-            .attributeDescriptor(forKeyword: keyAELaunchedAsLogInItem) == nil {
+        // With Silent Start enabled, no launch shows the dashboard (spec §4).
+        let launchedAtLogin = NSAppleEventManager.shared().currentAppleEvent?
+            .attributeDescriptor(forKeyword: keyAELaunchedAsLogInItem) != nil
+        let silentStart = UserDefaults.standard.bool(forKey: StatusBarController.launchSilentlyKey)
+        if !silentStart && !launchedAtLogin {
             DashboardPresentationCoordinator.shared.showDashboard()
         }
 

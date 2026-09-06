@@ -454,11 +454,15 @@ final class NativeBridge {
                 Task { await viewModel.triggerSync() }
             }
         case "checkForUpdates":
+            // Unavailable in Debug (Dev variant) builds — the official build
+            // must not be installed over the dev one.
+            #if !DEBUG
             UpdateChecker.shared.check(silent: false)
             // UpdateChecker mutates statusText synchronously; push a follow-up snapshot
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.pushSettings()
             }
+            #endif
         case "openAbout":
             if let url = URL(string: "https://github.com/xiufengsun/TokenTracker") {
                 NSWorkspace.shared.open(url)
