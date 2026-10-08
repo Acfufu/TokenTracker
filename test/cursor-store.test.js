@@ -820,3 +820,37 @@ test("materializing all Codex shards lets project purge clear frozen historical 
     assert.equal(await fs.readFile(projectQueuePath, "utf8"), "");
   });
 });
+
+test("legacy drift migration preserves v2-only namespaces (zcodeSandboxDbStats)", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-cursor-durable-"));
+  const trackerDir = path.join(home, ".tokentracker", "tracker");
+  const cursorsPath = path.join(trackerDir, "cursors.json");
+  await fs.mkdir(trackerDir, { recursive: true });
+  await fs.writeFile(
+    cursorsPath,
+    JSON.stringify({ version: 2, files: {}, updatedAt: new Date().toISOString() }),
+    "utf8",
+  );
+  try {
+    const store = await openCursorStore({ trackerDir, cursorsPath, forceV2: true });
+    // v2 专有命名空间：只活在 store generation 里，legacy cursors.json 从来没有它
+    store.cursors.zcodeSandboxDbStats = { "/tmp/sandbox/db.sqlite": "100:123.5" };
+    await store.commit();
+
+    // legacy 漂移（外部写入 cursors.json）→ 下次 open 触发 migrateLegacyCursorState 重建
+    await fs.writeFile(
+      cursorsPath,
+      JSON.stringify({ version: 2, files: {}, hourly: { generation: 3 }, updatedAt: new Date().toISOString() }),
+      "utf8",
+    );
+    const migrated = await openCursorStore({ trackerDir, cursorsPath, forceV2: true });
+    assert.deepEqual(
+      migrated.cursors.zcodeSandboxDbStats,
+      { "/tmp/sandbox/db.sqlite": "100:123.5" },
+      "漂移迁移不得洗掉 v2 专有命名空间（2026-10-08 zcodeSandbox 丢失案）",
+    );
+    assert.equal(migrated.cursors.hourly.generation, 3, "legacy 新键照常生效");
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});

@@ -1038,6 +1038,26 @@ async function migrateLegacyCursorState({
   const core = { ...cursors, files: coreFiles };
   delete core.codexHashes;
 
+  // Durability (2026-10-08): a legacy-cursors drift migration rebuilds `core` from the legacy
+  // cursors.json, which never carries namespaces that only ever lived in the v2 store (e.g.
+  // zcodeSandbox / zcodeSandboxDbStats). Without this merge a drift migration silently drops
+  // them — and generation GC keeps only two generations, so they are gone for good. Merge every
+  // prior-generation key the legacy state does not own; fail-soft when the previous generation
+  // is unreadable (e.g. written by a different store format).
+  if (previousManifest && previousManifest.current) {
+    try {
+      const previous = await readGeneration({ storeRoot, generationId: previousManifest.current });
+      if (previous && isCursorStateRoot(previous.core)) {
+        for (const [key, value] of Object.entries(previous.core)) {
+          if (key === "files" || key === "codexHashes" || key === "updatedAt") continue;
+          if (!(key in core)) core[key] = value;
+        }
+      }
+    } catch (_error) {
+      // Best-effort: preservation must never break the migration itself.
+    }
+  }
+
   const metadata = {
     version: STORE_VERSION,
     id: generationId,
