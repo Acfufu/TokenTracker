@@ -141,6 +141,7 @@ const {
   parseCommandCodeIncremental,
   parseTraeCnApiIncremental,
   parseTraeIncremental,
+  discoverZcodeSandboxDbs,
   bucketKey,
   toUtcHalfHourStart,
   totalsKey,
@@ -1789,6 +1790,46 @@ async function cmdSync(argv, context = {}) {
             }
           }
         } catch (err) { warnProviderParseFailure("ZCode", err, opts); }
+
+        // ── lzy sandbox sub-ledgers (2026-10-02 commandcode invisible-burn case): lzy controlled reviews run on
+        // isolated HOME, each run's sub-ledger lives in .lazyzcode/**/home under the project directory, never enters the host
+        // ledger — this scan backfills the structurally blind surface. Source stays "zcode" (no new source enum,
+        // icon/copy/specs untouched); cursor namespace "zcodeSandbox" is isolated from the host parser; consumption totals
+        // accumulate into the zcodeResult surface (zero new status surface).
+        // Steady-state cost: unchanged dbs (size+mtimeMs recorded in zcodeSandboxDbStats, independent of the
+        // zcodeSandbox message index) are skipped directly — sub-ledgers are static after review archiving, so backtests
+        // read each one only once.
+        try {
+          const sandboxDbs = discoverZcodeSandboxDbs(zcodePaths.native || zcodePaths.wsl);
+          const sandboxStats = cursors.zcodeSandboxDbStats && typeof cursors.zcodeSandboxDbStats === "object" ? cursors.zcodeSandboxDbStats : {};
+          const nextStats = {};
+          for (const sandboxDb of sandboxDbs) {
+            let stat = null;
+            try {
+              stat = fssync.statSync(sandboxDb);
+            } catch (_error) {
+              continue; // Sandbox cleaned up by lzy (disappeared between discovery and parsing)
+            }
+            const key = sandboxDb;
+            const prev = sandboxStats[key];
+            const fingerprint = `${stat.size}:${stat.mtimeMs}`;
+            if (prev === fingerprint) {
+              nextStats[key] = fingerprint;
+              continue; // Already ingested and unchanged — zero read skipped
+            }
+            const part = await parseOpencodeDbForInstall({
+              dbPath: sandboxDb, readFn: readZcodeDbMessages, source: "zcode", cursorKey: "zcodeSandbox",
+              // multiInstallParse 的 shared 面在此等价手传（直调不经其 flatten）——缺 cursors/queuePath
+              // 会在 parseOpencodeDbIncremental 的 ensureDir(path.dirname(undefined)) 处炸
+              cursors, queuePath, projectQueuePath,
+            });
+            zcodeResult.recordsProcessed += part.recordsProcessed || 0;
+            zcodeResult.eventsAggregated += part.eventsAggregated || 0;
+            zcodeResult.bucketsQueued += part.bucketsQueued || 0;
+            nextStats[key] = fingerprint;
+          }
+          cursors.zcodeSandboxDbStats = nextStats; // Disappeared db stats naturally fall out of the map (self-cleaning alongside sandbox cleanup)
+        } catch (err) { warnProviderParseFailure("ZCode sandboxes", err, opts); }
       }
     }
 

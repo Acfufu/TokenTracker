@@ -5758,6 +5758,136 @@ function readZcodeDbMessages(dbPath, sqliteOptions = {}, { propagateReadFailure 
   return [...historicalMessages, ...nativeMessages];
 }
 
+// ── lzy sandbox ledgers (2026-10-02 commandcode invisible-burn case) ──
+// lzy (LazyZCode) controlled reviews spawn isolated-HOME engine sessions: every run directory carries a
+// <run>/home/.zcode/cli/db/db.sqlite sub-ledger that never reaches the host ledger (metering seam
+// closure, ADR-0031) — host-ledger-only sync was structurally blind to it (measured: 7 days,
+// 550M tokens through a custom provider while the host ledger had zero rows for those sessions).
+// Discovery roots at the project directories the host ledger's session table already knows, then walks
+// ONLY the .lazyzcode subtree (bounded depth, pruned vendored dirs, capped db count) collecting
+// sub-ledgers whose schema matches the zcode model_usage layout. Source stays "zcode" — no new
+// source enum, so icon/copy/specs surfaces are untouched; sandbox rows attribute through their
+// sandbox directory like any other project path. Callers use cursorKey "zcodeSandbox" so the
+// sandbox message index is namespaced apart from the host-ledger parser.
+const ZCODE_SANDBOX_WALK_MAX_DEPTH = 10;
+// Cap bounds per-sync discovery cost (schema probe per candidate). Callers short-circuit
+// already-ingested unchanged dbs via a size+mtime stat map, so the cap only needs to cover
+// the live population — 512 headroom above the observed 300+ sub-ledgers on a heavy dev box
+// (2026-10-08: 301 live sub-ledgers; the old 256 cap silently truncated discovery).
+const ZCODE_SANDBOX_WALK_MAX_DBS = 512;
+const ZCODE_SANDBOX_PRUNED_DIRS = new Set(["node_modules", ".git", "dist", "out", "build", "coverage"]);
+// Nested search bounds: sub-ledgers also live under eval/ablation artifact trees
+// (<root>/artifacts/**/scratch|repo/.lazyzcode, observed depth 10 from the session root),
+// which the old top-level-only probe missed entirely (2026-10-08: 128 dbs / 72M tokens invisible).
+const ZCODE_SANDBOX_NESTED_MAX_DEPTH = 12;
+const ZCODE_SANDBOX_NESTED_MAX_VISITS = 20000;
+
+function discoverZcodeSandboxDbs(hostDbPath, sqliteOptions = {}) {
+  if (!hostDbPath || !fssync.existsSync(hostDbPath)) return [];
+  let hostRealPath = null;
+  try {
+    hostRealPath = fssync.realpathSync(hostDbPath);
+  } catch (_error) {
+    return [];
+  }
+  let rows = [];
+  try {
+    rows = readSqliteJsonRows(
+      hostDbPath,
+      "SELECT DISTINCT directory FROM session WHERE directory IS NOT NULL AND trim(directory) != ''",
+      { label: "ZCode", timeout: 10_000, maxBuffer: 8 * 1024 * 1024, ...sqliteOptions },
+    );
+  } catch (_error) {
+    return []; // Host ledger unreadable (no sqlite3 CLI, transient lock): fail-soft like the rest of this provider's parse.
+  }
+  const projectRoots = [
+    ...new Set(rows.map((row) => String(row?.directory || "").trim()).filter((dir) => dir && fssync.existsSync(dir))),
+  ];
+  const found = [];
+  // Cap counts UNIQUE candidates: session roots nest (a parent root's nested search and the child
+  // root's own top-level probe reach the same .lazyzcode), so counting raw hits would let
+  // duplicates saturate the cap and silently truncate the tail of the root list (2026-10-08:
+  // 512 raw hits deduped to 289 uniques, 12 dbs never searched).
+  const foundSeen = new Set();
+  const pushCandidate = (candidate) => {
+    if (foundSeen.has(candidate)) return;
+    foundSeen.add(candidate);
+    found.push(candidate);
+  };
+  const walk = (dir, depth) => {
+    if (found.length >= ZCODE_SANDBOX_WALK_MAX_DBS || depth > ZCODE_SANDBOX_WALK_MAX_DEPTH) return;
+    let entries;
+    try {
+      entries = fssync.readdirSync(dir, { withFileTypes: true });
+    } catch (_error) {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= ZCODE_SANDBOX_WALK_MAX_DBS) return;
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "home") {
+          // Sub-ledger marker: <run>/home/.zcode/cli/db/db.sqlite — collect and do not descend further
+          // (the .zcode subtree cannot contain a nested sub-ledger).
+          const candidate = path.join(child, ".zcode", "cli", "db", "db.sqlite");
+          if (fssync.existsSync(candidate)) pushCandidate(candidate);
+          continue;
+        }
+        if (ZCODE_SANDBOX_PRUNED_DIRS.has(entry.name)) continue;
+        walk(child, depth + 1);
+      }
+    }
+  };
+  // Nested search: walk the session root itself (bounded depth + visited-dir budget, dotted dirs and
+  // vendored dirs pruned) and collect EVERY .lazyzcode found — top-level <root>/.lazyzcode as before,
+  // plus nested artifact-tree registries like <root>/artifacts/**/scratch|repo/.lazyzcode. Nested
+  // run/registry setups are invisible to the old top-level-only probe but burn the same way.
+  const search = (dir, depth, state) => {
+    if (
+      found.length >= ZCODE_SANDBOX_WALK_MAX_DBS ||
+      depth > ZCODE_SANDBOX_NESTED_MAX_DEPTH ||
+      state.visits > ZCODE_SANDBOX_NESTED_MAX_VISITS
+    )
+      return;
+    let entries;
+    try {
+      entries = fssync.readdirSync(dir, { withFileTypes: true });
+    } catch (_error) {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= ZCODE_SANDBOX_WALK_MAX_DBS || state.visits > ZCODE_SANDBOX_NESTED_MAX_VISITS) return;
+      if (!entry.isDirectory()) continue;
+      if (entry.name === ".lazyzcode") {
+        walk(path.join(dir, entry.name), 0);
+        continue;
+      }
+      if (entry.name.startsWith(".") || ZCODE_SANDBOX_PRUNED_DIRS.has(entry.name)) continue;
+      state.visits += 1;
+      search(path.join(dir, entry.name), depth + 1, state);
+    }
+  };
+  for (const root of projectRoots) {
+    if (found.length >= ZCODE_SANDBOX_WALK_MAX_DBS) break;
+    search(root, 0, { visits: 0 });
+  }
+  const seen = new Set();
+  const result = [];
+  for (const candidate of found.sort()) {
+    let real = null;
+    try {
+      real = fssync.realpathSync(candidate);
+    } catch (_error) {
+      continue;
+    }
+    if (real === hostRealPath || seen.has(real)) continue;
+    if (!hasZcodeNativeUsageSchema(real, sqliteOptions)) continue; // Incomplete schema (empty/snapshotted db) → excluded
+    seen.add(real);
+    result.push(real);
+  }
+  return result;
+}
+
 async function parseOpencodeDbIncremental({
   dbMessages,
   dbPath,
@@ -24691,6 +24821,7 @@ module.exports = {
   zcodeDbHasContent,
   hasZcodeCursorState,
   resolveZcodeInstallPaths,
+  discoverZcodeSandboxDbs,
   resolveQoderDbPath,
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
