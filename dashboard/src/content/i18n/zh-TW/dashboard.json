@@ -942,7 +942,7 @@
   "cloud.gift.code_label": "會員兌換碼",
   "cloud.gift.confirm": "確認兌換",
   "cloud.gift.redeeming": "正在兌換…",
-  "cloud.gift.redeemed": "禮遇已記錄，會員權益和日期以帳戶顯示為準。",
+  "cloud.gift.redeemed": "兌換成功",
   "cloud.gift.already_redeemed": "你已兌換過此碼，對應禮遇已顯示於帳戶中。",
   "cloud.gift.refresh_needed": "兌換已記錄，但會員狀態重新整理失敗。請重新整理帳戶，確認權益和生效日期。",
   "cloud.gift.redeem_another": "兌換其他碼",
@@ -1087,5 +1087,6 @@
   "sessions.storage.tooltip": "僅會話檔案 · {{metric}} · 每千個歷史 token {{ratio}} 位元組。不含共用資料庫、快取和專案檔案。",
   "sessions.storage.allocated": "配置空間",
   "sessions.storage.logical": "邏輯檔案大小",
-  "sessions.storage.size": "{{value}} MiB"
+  "sessions.storage.size": "{{value}} MiB",
+  "cloud.gift.done": "完成"
 }

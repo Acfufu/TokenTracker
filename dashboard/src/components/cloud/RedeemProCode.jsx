@@ -64,7 +64,7 @@ export function RedeemProCode({ account, auth, refresh, compact = false, panelCo
   };
   const perform = async (redeem) => {
     if (lock.current || (redeem && (!canRedeem || !code.trim()))) return;
-    if (redeem && restriction) {
+    if (redeem && restriction && restriction !== "gift_checkout_pending") {
       setError(new CloudBillingError(restriction));
       return;
     }
@@ -136,16 +136,25 @@ export function RedeemProCode({ account, auth, refresh, compact = false, panelCo
             </form>
           ) : (
             <div role="status" className="space-y-2 text-sm leading-6">
-              <p>{copy(confirmed ? receipt.already_redeemed ? "cloud.gift.already_redeemed" : "cloud.gift.redeemed" : "cloud.gift.refresh_needed")}</p>
-              {receipt.gift ? <p className="text-xs text-oai-gray-600 dark:text-oai-gray-300">
+              {!(settingsRow && confirmed) ? <p>{copy(confirmed ? receipt.already_redeemed ? "cloud.gift.already_redeemed" : "cloud.gift.redeemed" : "cloud.gift.refresh_needed")}</p> : null}
+              {receipt.gift ? settingsRow && confirmed ? <div className="py-1">
+                <p className="text-base font-medium text-oai-black dark:text-oai-white">{copy("cloud.gift.duration", { days: receipt.gift.duration_days })}</p>
+                <p className="mt-1 text-sm text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.history.term", {
+                  start: formatCloudDate(receipt.gift.starts_at), end: formatCloudDate(receipt.gift.ends_at) })}</p>
+              </div> : <p className="text-xs text-oai-gray-600 dark:text-oai-gray-300">
                 {copy("cloud.gift.term", { days: receipt.gift.duration_days,
                   start: formatCloudDate(receipt.gift.starts_at), end: formatCloudDate(receipt.gift.ends_at) })}
               </p> : null}
               {!confirmed ? <Button type="button" variant="secondary" disabled={busy} onClick={() => void perform(false)}>
                 {copy("cloud.action.refresh_membership")}
-              </Button> : <Button type="button" variant="ghost" onClick={() => { setReceipt(null); setConfirmed(false); }}>
-                {copy("cloud.gift.redeem_another")}
-              </Button>}
+              </Button> : <div className="flex flex-wrap justify-end gap-2 pt-3">
+                <Button type="button" variant="secondary" size="sm" onClick={() => {
+                  setReceipt(null); setConfirmed(false);
+                  requestAnimationFrame(() => inputRef.current?.focus());
+                }}>{copy("cloud.gift.redeem_another")}</Button>
+                {settingsRow ? <Button type="button" size="sm" className="min-w-20" disabled={busy}
+                  onClick={() => changeOpen(false)}>{copy("cloud.gift.done")}</Button> : null}
+              </div>}
             </div>
           )}
           {error ? <div id={`${inputId}-error`}>
@@ -154,7 +163,7 @@ export function RedeemProCode({ account, auth, refresh, compact = false, panelCo
               : <BillingNotice error={error} context="gift" />}
           </div> : null}
           </> : null}
-          {gifts.length ? <ul aria-label={copy("cloud.gift.history_title")} className="divide-y divide-oai-gray-200 dark:divide-oai-gray-800">
+          {gifts.length && !receipt ? <ul aria-label={copy("cloud.gift.history_title")} className="divide-y divide-oai-gray-200 dark:divide-oai-gray-800">
             {gifts.map((gift) => <li key={gift.id} className="py-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span>{copy("cloud.gift.duration", { days: gift.duration_days })}</span>
@@ -171,7 +180,8 @@ export function RedeemProCode({ account, auth, refresh, compact = false, panelCo
   }
   if (settingsRow) {
     return <CloudActionDialog open={expanded} onOpenChange={changeOpen}
-      title={copy(canRedeem ? "cloud.gift.redeem_action" : "cloud.gift.history_title")}
+      title={copy(receipt && confirmed ? "cloud.gift.redeemed" : canRedeem ? "cloud.gift.redeem_action" : "cloud.gift.history_title")}
+      triggerLabel={copy(canRedeem ? "cloud.gift.redeem_action" : "cloud.gift.history_title")}
       icon={Gift} preventClose={busy} initialFocus={canRedeem && !receipt ? inputRef : undefined}>{panel}</CloudActionDialog>;
   }
   return (

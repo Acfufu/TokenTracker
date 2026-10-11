@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
-import { Hub } from "@lucasmarkes/hairline/react";
+import { CloudElectricLogo } from "../components/cloud/CloudElectricLogo.jsx";
 import { ArrowRight, Check, ChevronDown, Cloud, Monitor, Server, ShieldCheck } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -141,7 +141,7 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
     <div ref={pageRef} className="tt-cloud-theme flex flex-1 flex-col font-oai text-oai-black dark:text-oai-white">
       <main className="tt-cloud-layout relative isolate mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
         <div className="tt-cloud-art" aria-hidden="true">
-          <Hub className="tt-cloud-figure pointer-events-auto w-full translate-x-8" intensity={0.4} play tabIndex={-1} />
+          <CloudElectricLogo />
         </div>
         <header className="relative z-10 mb-9 max-w-xl">
           <h1 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">{copy("cloud.page.title")}</h1>
@@ -255,7 +255,7 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
           {!error && !loading && launched && !providerAvailable ? <BillingNotice>{copy("cloud.catalog.provider_unavailable")}</BillingNotice> : null}
           {!error && !loading && launched && catalog?.environment === "sandbox" ? <BillingNotice>{copy("cloud.catalog.sandbox")}</BillingNotice> : null}
         </div>
-        <section className="mt-8 rounded-xl border border-oai-gray-200 bg-white p-6 dark:border-oai-gray-800 dark:bg-oai-gray-900 md:p-7">
+        <section className="mt-8 rounded-xl border border-oai-gray-200 bg-white px-6 pt-6 pb-2 dark:border-oai-gray-800 dark:bg-oai-gray-900 md:px-7 md:pt-7">
           <h2 className="mb-3 text-lg font-semibold">{copy("cloud.plan.faq_title")}</h2>
           <div className="divide-y divide-oai-gray-200 dark:divide-oai-gray-800">
             <details className="group">

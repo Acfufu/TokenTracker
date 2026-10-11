@@ -400,9 +400,6 @@ export default function App() {
     } else {
       content = pageNode;
     }
-    if (isCloudPath || isCheckoutPath || isSelfHostPath) {
-      content = <div className="tt-cloud-theme">{content}</div>;
-    }
   }
 
   return (

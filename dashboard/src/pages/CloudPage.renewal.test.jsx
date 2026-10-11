@@ -15,7 +15,7 @@ const prices = [
   { sku: "cloud_usd_yearly", billing_mode: "recurring", currency: "USD", amount_cents: 5999, term_months: 12 },
 ];
 
-vi.mock("@lucasmarkes/hairline/react", () => ({ Hub: () => null }));
+vi.mock("../components/cloud/CloudElectricLogo.jsx", () => ({ CloudElectricLogo: () => null }));
 vi.mock("../contexts/LoginModalContext.jsx", () => ({
   useLoginModal: () => ({ openLoginModal: state.openLoginModal }),
 }));

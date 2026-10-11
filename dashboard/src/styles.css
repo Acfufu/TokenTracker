@@ -1120,7 +1120,7 @@ html.native-windows-app .tt-native-glass-shell aside[data-native-sidebar] {
   }
 }
 
-/* Decorative line figure, placed behind the plan cards. */
+/* Cloud brand artwork uses the shared page layout; no extra page shell. */
 .tt-cloud-layout {
   container: cloud-page / inline-size;
 }
@@ -1142,6 +1142,13 @@ html.native-windows-app .tt-native-glass-shell aside[data-native-sidebar] {
   }
 }
 
+.dark .tt-cloud-art {
+  top: -12px;
+  right: 8px;
+  width: 340px;
+  height: 220px;
+}
+
 .tt-cloud-figure {
   --hairline-plate: #fafafa;
   --hairline-hi: #404040;
@@ -1151,12 +1158,26 @@ html.native-windows-app .tt-native-glass-shell aside[data-native-sidebar] {
   --hairline-stroke: 0.85;
 }
 
-.dark .tt-cloud-figure {
-  --hairline-plate: #171717;
-  --hairline-hi: #e5e5e5;
-  --hairline-edge: #d4d4d4;
-  --hairline-mid: #a3a3a3;
-  --hairline-lo: #404040;
+.tt-cloud-electric {
+  --tt-electric-core: #5b21b6;
+  --tt-electric-glow: #8b5cf6;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.tt-cloud-electric.is-dark {
+  --tt-electric-core: #cffafe;
+  --tt-electric-glow: #8b5cf6;
+}
+
+.tt-cloud-electric-static {
+  position: absolute;
+  inset: 15%;
+  background: var(--tt-electric-core);
+  mask: url("/token-tracker-bolt-outline.svg") center / contain no-repeat;
+  -webkit-mask: url("/token-tracker-bolt-outline.svg") center / contain no-repeat;
 }
 
 .tt-sidebar-account-control {

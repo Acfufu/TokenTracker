@@ -5,6 +5,7 @@ const {
   waffoProductId, validateWaffoProduct, createWaffoCheckout, verifyWaffoWebhook,
   queryWaffoOrder, queryWaffoPeriod, cancelWaffoSubscription,
   closeUnpaidWaffoOrder, closeUnpaidWaffoAttempts, queryWaffoBindings,
+  confirmExpiredUnusedWaffoCheckout,
 } = require("./helpers/load-cloud-module")("waffo");
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048,
@@ -100,6 +101,36 @@ function replacement(source, letter) {
   });
   return copy;
 }
+
+test('expired unused checkout requires two complete provider snapshots and a receipt expiry', async () => {
+  const now = Date.now();
+  const target = { ...order, status: 'ready', checkout_attempts: 1,
+    checkout_claimed_at: new Date(now - 2 * 3600000).toISOString(),
+    expires_at: new Date(now - 3600000).toISOString(),
+    provider_checkout_id: 'cs_fixture-unused',
+    checkout_url: 'https://pancake.waffo.ai/store/example/checkout/cs_fixture-unused' };
+  let reads = 0;
+  const empty = lookup([], target);
+  const request = (...args) => { reads++; return empty(...args); };
+  assert.equal(await confirmExpiredUnusedWaffoCheckout(target, config, request, now), true);
+  assert.equal(reads, 2);
+  for (const changed of [
+    { expires_at: new Date(now + 1000).toISOString() },
+    { checkout_claimed_at: new Date(now - 1800000).toISOString() },
+    { checkout_claimed_at: null }, { provider_checkout_id: null },
+    { provider_order_id: paymentId }, { waffo_order_id: remoteId }, { status: 'paid' },
+  ]) {
+    assert.equal(await confirmExpiredUnusedWaffoCheckout({ ...target, ...changed }, config,
+      () => assert.fail('unsafe candidate must not reach the provider'), now), false);
+  }
+  assert.equal(await confirmExpiredUnusedWaffoCheckout(target, config, lookup([remote(target)], target), now), false);
+  let snapshot = 0;
+  const appeared = verifiedRequest(() => Response.json({ data: {
+    subscriptionOrders: ++snapshot === 1 ? [] : [remote(target)] } }));
+  assert.equal(await confirmExpiredUnusedWaffoCheckout(target, config, appeared, now), false);
+  await assert.rejects(confirmExpiredUnusedWaffoCheckout(target, config,
+    async () => { throw new Error('provider offline'); }, now), /payment_provider_unavailable/);
+});
 
 test("a replacement paid order remains attributable when the previous attempt failed and closed", async () => {
   const failed = remote(); failed.status = "closed"; failed.payments[0].status = "failed";

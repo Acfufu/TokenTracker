@@ -589,5 +589,7 @@
   "settings.appearance.token_grouping.label": "숫자 그룹화",
   "settings.appearance.token_grouping.hint": "정확한 숫자는 3자리 또는 중국어 4자리 그룹을 사용합니다. 간단히 표시한 값의 툴팁에도 적용됩니다.",
   "settings.appearance.token_grouping.thousand": "3자리",
-  "settings.appearance.token_grouping.wan": "4자리"
+  "settings.appearance.token_grouping.wan": "4자리",
+  "leaderboard.pro.badge": "Pro",
+  "leaderboard.pro.badge_aria": "TokenTracker Pro 회원"
 }

@@ -35,6 +35,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("Cloud gift redemption", () => {
+  it("shows one compact confirmed receipt with clear completion and another-code actions", async () => {
+    props.layout = "settings-row";
+    const view = show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
+    props.account = { ...props.account, gifts: [gift] };
+    view.rerender(<RedeemProCode {...props} />);
+    const dialog = screen.getByRole("dialog", { name: "Code redeemed" });
+    expect(within(dialog).getAllByText("30 days of Cloud")).toHaveLength(1);
+    expect(within(dialog).queryByRole("list", { name: "Cloud gifts" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Redeem another code" })).toBeEnabled();
+    await click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await click(screen.getByRole("button", { name: "Redeem Cloud code" }));
+    await click(screen.getByRole("button", { name: "Redeem another code" }));
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("keeps gift history inside its settings row without allowing unsupported redemption", async () => {
     props.layout = "settings-row";
     props.account.gift_redemption_available = false;
@@ -62,12 +78,12 @@ describe("Cloud gift redemption", () => {
     expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Close dialog" })).toBeDisabled();
     expect(request).toHaveBeenCalledTimes(1);
     await act(async () => { resolve({ gift }); });
-    expect(screen.getByText(/Your gift is recorded/)).toBeVisible();
+    expect(screen.getByText(/Code redeemed/)).toBeVisible();
     await act(async () => { await userEvent.keyboard("{Escape}"); });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
     await click(trigger);
-    expect(screen.getByText(/Your gift is recorded/)).toBeVisible();
+    expect(screen.getByText(/Code redeemed/)).toBeVisible();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(request).toHaveBeenCalledTimes(1);
   });
@@ -106,7 +122,7 @@ describe("Cloud gift redemption", () => {
     expect(request).toHaveBeenCalledWith("redeem-gift", { auth: expect.any(Function),
       body: { code, request_id: expect.stringMatching(/^[0-9a-f-]{36}$/) } });
     expect(props.refresh).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/Your gift is recorded/)).toBeInTheDocument();
+    expect(screen.getByText(/Code redeemed/)).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
@@ -121,7 +137,7 @@ describe("Cloud gift redemption", () => {
     expect(screen.getByRole("button", { name: "Redeeming…" })).toBeDisabled();
     expect(screen.getByRole("textbox")).toBeDisabled();
     await act(async () => { resolve({ gift }); });
-    expect(screen.getByText(/Your gift is recorded/)).toBeInTheDocument();
+    expect(screen.getByText(/Code redeemed/)).toBeInTheDocument();
   });
   it("reuses a request UUID after an ambiguous failure, including equivalent code formatting", async () => {
     request.mockRejectedValueOnce({ code: "billing_network_error" });
@@ -132,7 +148,7 @@ describe("Cloud gift redemption", () => {
     await act(async () => { fireEvent.change(screen.getByRole("textbox"), { target: { value: code.toLowerCase().replaceAll("-", " ") } }); });
     await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(request.mock.calls[1][1].body.request_id).toBe(requestId);
-    expect(screen.getByText(/Your gift is recorded/)).toBeInTheDocument();
+    expect(screen.getByText(/Code redeemed/)).toBeInTheDocument();
   });
   it("starts a separate operation only when the code changes", async () => {
     request.mockRejectedValue({ code: "billing_network_error" });
@@ -145,6 +161,7 @@ describe("Cloud gift redemption", () => {
   it.each(["gift_requires_renewal_cancel", "gift_checkout_pending"])("explains %s only after an attempt without consuming a code or changing billing", async (restriction) => {
     props.layout = "settings-row";
     props.account.redemption_restriction = restriction;
+    if (restriction === "gift_checkout_pending") request.mockRejectedValue({ code: restriction });
     show(); await click(screen.getByRole("button", { name: "Redeem Cloud code" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox")).toBeEnabled();
@@ -155,38 +172,47 @@ describe("Cloud gift redemption", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(restriction === "gift_checkout_pending" ? /pending payment/i : /auto-renewal/i);
     expect(screen.getByRole("textbox")).toHaveValue(code);
     expect(screen.getByRole("textbox")).toBeEnabled();
-    expect(request).not.toHaveBeenCalled();
+    if (restriction === "gift_checkout_pending") expect(request).toHaveBeenCalledTimes(1);
+    else expect(request).not.toHaveBeenCalled();
     expect(props.refresh).not.toHaveBeenCalled();
+  });
+  it("lets the server resolve an expired checkout instead of trusting a stale account restriction", async () => {
+    props.account.redemption_restriction = "gift_checkout_pending";
+    show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(props.refresh).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/Code redeemed/i);
   });
   it.each(["gift_code_unavailable", "gift_redemption_rate_limited", "gift_not_available", "authentication_required"])("maps %s to a safe inline error without revealing code ownership", async (error) => {
     request.mockRejectedValue({ code: error });
     show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(screen.getByRole("alert")).not.toHaveTextContent(error);
-    expect(screen.queryByText(/Your gift is recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed/)).not.toBeInTheDocument();
     expect(props.refresh).not.toHaveBeenCalled();
   });
   it("keeps the server receipt when account refresh fails without claiming Cloud activation or re-redeeming", async () => {
     props.refresh.mockResolvedValueOnce(null);
     show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(screen.getByText(/membership could not be refreshed/)).toBeInTheDocument();
-    expect(screen.queryByText(/Your gift is recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed/)).not.toBeInTheDocument();
     expect(screen.getByText(/30 days of Cloud/)).toBeInTheDocument();
     await click(screen.getByRole("button", { name: "Refresh membership" }));
     expect(request).toHaveBeenCalledTimes(1);
     expect(props.refresh).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(/Your gift is recorded/)).toBeInTheDocument();
+    expect(screen.getByText(/Code redeemed/)).toBeInTheDocument();
   });
   it("does not claim activation from a POST membership while the refreshed account lacks the gift", async () => {
     props.refresh.mockResolvedValue({ gifts: [], membership: { status: "free" } });
     show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(screen.getByText(/membership could not be refreshed/)).toBeInTheDocument();
-    expect(screen.queryByText(/Your gift is recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed/)).not.toBeInTheDocument();
   });
   it("treats a success response with no gift identity as unconfirmed and preserves the retry operation", async () => {
     request.mockResolvedValue({ membership: { status: "active" } });
     show(); await fill(); await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(screen.getByRole("alert")).toBeInTheDocument();
-    expect(screen.queryByText(/Your gift is recorded|code was redeemed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed|code was redeemed/)).not.toBeInTheDocument();
     expect(props.refresh).not.toHaveBeenCalled();
     await click(screen.getByRole("button", { name: "Redeem code" }));
     expect(request.mock.calls[1][1].body.request_id).toBe(request.mock.calls[0][1].body.request_id);
@@ -200,7 +226,7 @@ describe("Cloud gift redemption", () => {
     view.rerender(<RedeemProCode {...props} />);
     await act(async () => { resolve({ gift, membership: { status: "active" } }); });
     expect(props.refresh).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Your gift is recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed/)).not.toBeInTheDocument();
     await click(screen.getByRole("button", { name: "Redeem Cloud code" }));
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
@@ -211,7 +237,7 @@ describe("Cloud gift redemption", () => {
     props = { ...props, auth: { ...props.auth, user: { id: "actor-b" } } };
     view.rerender(<RedeemProCode {...props} />);
     await act(async () => { resolve({ gifts: [gift], membership: { status: "active" } }); });
-    expect(screen.queryByText(/Your gift is recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Code redeemed/)).not.toBeInTheDocument();
   });
   it("stops a redemption before it sends with a token acquired after the account changed", async () => {
     let resolveToken;

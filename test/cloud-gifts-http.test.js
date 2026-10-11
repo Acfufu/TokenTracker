@@ -3,13 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
-const { randomUUID, randomBytes, createHash, createHmac } = require('node:crypto');
+const { randomUUID, randomBytes, createHash, createHmac, generateKeyPairSync } = require('node:crypto');
 const { PGlite } = require('@electric-sql/pglite');
 const billing = require('./helpers/load-cloud-module')('../tokentracker-billing').default;
 const fetch = globalThis.fetch;
 const previousDeno = globalThis.Deno;
 const secret = 'isolated-gift-http-auth-only';
 let db, server, base, env;
+let expiredProviderRef = null, expiredProviderReads = 0;
 const sign = (sub, role = 'authenticated') => {
   const head = Buffer.from(JSON.stringify({alg:'HS256'})).toString('base64url');
   const claims = Buffer.from(JSON.stringify({sub,role,exp:Math.floor(Date.now()/1000)+3600})).toString('base64url');
@@ -77,6 +78,14 @@ test.before(async () => {
   globalThis.Deno = {env:{get:key=>env[key]}};
   globalThis.fetch = (input,init) => {
     const url = new URL(typeof input==='string'?input:input.url||input.href);
+    if (expiredProviderRef && url.origin !== base) {
+      assert.ok(url.pathname.endsWith('graphql'),'expired gift cleanup must only query the provider');
+      const body=JSON.parse(init.body);
+      assert.equal(body.variables.ref,expiredProviderRef);
+      assert.equal(body.variables.storeId,env.WAFFO_STORE_ID);
+      expiredProviderReads++;
+      return Promise.resolve(Response.json({data:{subscriptionOrders:[],subscriptionOrdersCount:0}}));
+    }
     assert.equal(url.origin,base,'gift flows must never call a payment provider');return fetch(input,init);
   };
 });
@@ -125,4 +134,36 @@ test('business checkout restriction is 409 without consuming the gift and keeps 
   const result=await api(id,'redeem-gift',{code:raw,request_id:randomUUID()});assert.equal(result.response.status,409);assert.equal(result.data.error,'gift_checkout_pending');
   const account=await api(id,'account');assert.equal(account.data.gift_redemption_available,true);assert.equal(account.data.redemption_restriction,'gift_checkout_pending');
   assert.equal((await api(await user(),'redeem-gift',{code:raw,request_id:randomUUID()})).response.status,200);
+});
+
+test('an expired checkout never issued to the provider is closed before the same gift request retries', async () => {
+  const id=await user(), raw=await code(), request=randomUUID();
+  const created=await db.query("SELECT cloud_create_order($1,'sandbox','waffo','cloud_usd_monthly_fixed',$2) AS r",[id,randomUUID()]);
+  const order=created.rows[0].r;
+  await db.query("UPDATE tokentracker_cloud_orders SET expires_at=now()-interval '1 hour' WHERE id=$1",[order.id]);
+  const result=await api(id,'redeem-gift',{code:raw,request_id:request});
+  assert.equal(result.response.status,200);assert.equal(result.data.membership.access_source,'gift');
+  assert.equal((await db.query('SELECT status FROM tokentracker_cloud_orders WHERE id=$1',[order.id])).rows[0].status,'closed');
+  const retry=await api(id,'redeem-gift',{code:raw,request_id:request});
+  assert.equal(retry.data.already_redeemed,true);assert.equal(retry.data.gift.id,result.data.gift.id);
+});
+
+test('an expired receipt-bound checkout with two verified empty snapshots no longer blocks gift redemption', async () => {
+  const id=await user(),raw=await code(),request=randomUUID();
+  const created=await db.query("SELECT cloud_create_order($1,'sandbox','waffo','cloud_usd_monthly',$2) AS r",[id,randomUUID()]);
+  const order=created.rows[0].r,session='cs_http-unused';
+  await db.query("UPDATE tokentracker_cloud_orders SET status='ready',checkout_attempts=1,checkout_claimed_at=now()-interval '2 hours',expires_at=now()-interval '1 hour',provider_price_id=$2,provider_checkout_id=$3,checkout_url=$4 WHERE id=$1",
+    [order.id,'PROD_'+'p'.repeat(22),session,'https://pancake.waffo.ai/store/example/checkout/'+session]);
+  const keys=generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs8',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}});
+  env.WAFFO_PRIVATE_KEY=keys.privateKey;env.WAFFO_MERCHANT_ID='MER_'+'m'.repeat(22);env.WAFFO_STORE_ID='STO_'+'s'.repeat(22);
+  expiredProviderRef=order.id;expiredProviderReads=0;
+  try {
+    const result=await api(id,'redeem-gift',{code:raw,request_id:request});
+    assert.equal(result.response.status,200);assert.equal(result.data.membership.access_source,'gift');
+    assert.equal(expiredProviderReads,2);
+    assert.equal((await db.query('SELECT status FROM tokentracker_cloud_orders WHERE id=$1',[order.id])).rows[0].status,'closed');
+    assert.equal((await db.query('SELECT count(*) AS n FROM tokentracker_cloud_gift_grants WHERE user_id=$1',[id])).rows[0].n,1);
+  } finally {
+    expiredProviderRef=null;delete env.WAFFO_PRIVATE_KEY;delete env.WAFFO_MERCHANT_ID;delete env.WAFFO_STORE_ID;
+  }
 });

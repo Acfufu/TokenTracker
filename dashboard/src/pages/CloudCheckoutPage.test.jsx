@@ -20,14 +20,7 @@ import { beginCloudAction, beginCloudOrderAction } from "../lib/cloud-action-int
 const NumberFormat = Intl.NumberFormat;
 
 // The decorative animation relies on browser observers; this suite verifies billing behavior.
-vi.mock("@lucasmarkes/hairline/react", () => ({
-  Relay: () => null,
-  Plot: () => null,
-  Exploded: () => null,
-  Terrain: () => null,
-  Laptop: () => null,
-  Hub: () => null,
-}));
+vi.mock("../components/cloud/CloudElectricLogo.jsx", () => ({ CloudElectricLogo: () => null }));
 
 const mocks = vi.hoisted(() => ({
   request: vi.fn(),

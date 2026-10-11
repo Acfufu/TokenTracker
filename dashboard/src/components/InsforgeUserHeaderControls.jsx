@@ -201,10 +201,9 @@ export function InsforgeUserHeaderControls({ className, variant = "header", coll
             {initialsFromName(displayName)}
           </span>
         )}
-        {proActive && !collapsed && <span aria-hidden title={copy("leaderboard.pro.badge_aria")} className="leaderboard-pro-badge">{copy("leaderboard.pro.badge")}</span>}
         {isSidebar ? (
           !collapsed && (
-            <span className="truncate text-[13px] font-medium text-oai-gray-900 dark:text-oai-gray-200 flex-1 text-left min-w-0">
+            <span className="truncate text-[13px] font-medium text-oai-gray-900 dark:text-oai-gray-200 text-left min-w-0">
               {displayName}
             </span>
           )
@@ -213,6 +212,7 @@ export function InsforgeUserHeaderControls({ className, variant = "header", coll
             {displayName}
           </span>
         )}
+        {proActive && !collapsed && <span aria-hidden title={copy("leaderboard.pro.badge_aria")} className="leaderboard-pro-badge shrink-0">{copy("leaderboard.pro.badge")}</span>}
       </button>
     </div>
   );

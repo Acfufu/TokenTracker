@@ -883,7 +883,7 @@
   "cloud.gift.code_label": "会员兑换码",
   "cloud.gift.confirm": "确认兑换",
   "cloud.gift.redeeming": "正在兑换…",
-  "cloud.gift.redeemed": "礼遇已记录，会员权益和日期以账户显示为准。",
+  "cloud.gift.redeemed": "兑换成功",
   "cloud.gift.already_redeemed": "你已兑换过此码，对应礼遇已显示在账户中。",
   "cloud.gift.refresh_needed": "兑换已记录，但会员状态刷新失败。请刷新账户，确认权益和生效日期。",
   "cloud.gift.redeem_another": "兑换其他码",
@@ -1028,5 +1028,6 @@
   "sessions.storage.tooltip": "仅会话文件 · {{metric}} · 每千个历史 token {{ratio}} 字节。不含共享数据库、缓存和项目文件。",
   "sessions.storage.allocated": "分配空间",
   "sessions.storage.logical": "逻辑文件大小",
-  "sessions.storage.size": "{{value}} MiB"
+  "sessions.storage.size": "{{value}} MiB",
+  "cloud.gift.done": "完成"
 }

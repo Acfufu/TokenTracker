@@ -1,6 +1,7 @@
 import { cancelWaffoSubscription, closeUnpaidWaffoAttempts, queryWaffoBindings, createWaffoCheckout, validateWaffoProduct, waffoProductId } from "./cloud/waffo.ts";
 import { reconcileWaffoOrder } from "./cloud/waffo-processing.ts";
 import { giftAccount, redeemGift } from "./cloud/gifts.ts";
+import { closeExpiredUnusedGiftOrders } from "./cloud/gift-expired-orders.ts";
 import {
   BillingError,
   type CloudOrder,
@@ -143,7 +144,12 @@ export default async function billing(req: Request): Promise<Response> {
     }
     if (action === "redeem-gift" && req.method === "POST") {
       const input = await body(req);
-      const result = await redeemGift(client, userId, environment, input.code, uuid(input.request_id));
+      const requestId = uuid(input.request_id);
+      let result = await redeemGift(client, userId, environment, input.code, requestId);
+      if (result.status === 409 && result.data.error === 'gift_checkout_pending' &&
+          await closeExpiredUnusedGiftOrders(client, userId, environment, waffoConfig())) {
+        result = await redeemGift(client, userId, environment, input.code, requestId);
+      }
       const response = json(result.data, result.status);
       if (result.status === 429) response.headers.set("Retry-After", String(object(result.data).retry_after || 900));
       return response;

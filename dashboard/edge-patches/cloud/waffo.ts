@@ -186,6 +186,8 @@ export async function validateWaffoProduct(order: CloudOrder, config: WaffoConfi
   assertNoTrial(product.metadata);
 }
 
+const CHECKOUT_TTL_SECONDS = 1800;
+
 export async function createWaffoCheckout(order: CloudOrder, config: WaffoConfig, request: Fetcher = fetch) {
   const id = waffoProductId(order, config);
   let success: URL;
@@ -198,7 +200,7 @@ export async function createWaffoCheckout(order: CloudOrder, config: WaffoConfig
   await validateWaffoProduct(order, config, request);
   const result = await providerCall(() => client(config, request).checkout.createSession({
     productId: id, currency: order.currency, withTrial: false,
-    successUrl: success.toString(), expiresInSeconds: 1800,
+    successUrl: success.toString(), expiresInSeconds: CHECKOUT_TTL_SECONDS,
     orderMerchantExternalId: order.id,
     metadata: { tokentracker_order_id: order.id, tokentracker_user_id: order.user_id,
       tokentracker_environment: order.environment },
@@ -651,4 +653,30 @@ export async function closeUnpaidWaffoOrder(order: BoundOrder, config: WaffoConf
   const attempts = await closeUnpaidWaffoAttempts(order, config, request);
   if (attempts.length !== 1) throw new BillingError("ambiguous_payment_binding", 409);
   return attempts[0];
+}
+
+// A Back/replacement session exists only after a provider order was created.
+// Local TTL alone is insufficient: require a receipt-bound expired session and
+// two signed, complete empty snapshots before closing an unused checkout.
+export async function confirmExpiredUnusedWaffoCheckout(order: BoundOrder, config: WaffoConfig,
+  request: Fetcher = fetch, now = Date.now()): Promise<boolean> {
+  assertOrder(order, config);
+  const expires = Date.parse(String(order.expires_at));
+  if (!['pending', 'ready'].includes(order.status) || !Number.isFinite(expires) || expires > now ||
+      order.provider_order_id || order.waffo_order_id) return false;
+  const record = object(order);
+  if (record.checkout_attempts === 0 && !record.provider_checkout_id && !order.checkout_url) return true;
+  const claimed = Date.parse(String(record.checkout_claimed_at));
+  const session = record.provider_checkout_id;
+  if (typeof session !== 'string' || !/^cs_[0-9A-Za-z_-]+$/.test(session) ||
+      !Number.isFinite(claimed) || !order.checkout_url) return false;
+  const checkout = new URL(order.checkout_url);
+  if (checkout.protocol !== 'https:' || checkout.hostname !== 'pancake.waffo.ai' || checkout.port ||
+      checkout.username || checkout.password || !checkout.pathname.startsWith('/store/') ||
+      !checkout.pathname.endsWith(`/checkout/${session}`)) return false;
+  // A saved receipt means both bounded provider calls completed successfully.
+  // Allow a full minute beyond those two 15-second calls before expiry cleanup.
+  if (now < claimed + CHECKOUT_TTL_SECONDS * 1000 + 60_000) return false;
+  if ((await providerOrders(order, config, request)).length) return false;
+  return (await providerOrders(order, config, request)).length === 0;
 }

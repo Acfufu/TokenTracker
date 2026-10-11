@@ -16,7 +16,7 @@ describe("LeaderboardTableScroll", () => {
     vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(() => contentWidth);
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => viewportWidth);
     vi.stubGlobal("ResizeObserver", class {
-      constructor(callback) { resize = callback; observer = this; }
+      constructor(callback) { resize = callback; observer = { observe: this.observe, disconnect: this.disconnect }; }
       observe = vi.fn();
       disconnect = vi.fn();
     });

@@ -9,7 +9,7 @@ import { readCloudPurchase } from "../../lib/cloud-checkout.js";
 import { setCopyLocale } from "../../lib/copy";
 
 // This integration test exercises auth ownership, not the plan's browser animation.
-vi.mock("@lucasmarkes/hairline/react", () => ({ Hub: () => null }));
+vi.mock("../../components/cloud/CloudElectricLogo.jsx", () => ({ CloudElectricLogo: () => null }));
 
 const state = vi.hoisted(() => ({ token: null, user: null }));
 const client = vi.hoisted(() => ({
