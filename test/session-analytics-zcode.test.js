@@ -19,7 +19,9 @@ const {
   summarizeSessions,
   resolveSessionSidecarPath,
 } = require("../src/lib/session-analytics");
-const { readZcodeDbMessages } = require("../src/lib/rollout");
+const { readZcodeDbMessages, parseOpencodeDbIncremental } = require("../src/lib/rollout");
+const { withHome } = require("./helpers/with-home");
+const wsl = require("../src/lib/wsl-probe");
 
 // engines allow Node >= 20 but node:sqlite (used to build fixture databases
 // and by the production sqlite reader fallback) only exists from 22.5 — same
@@ -207,7 +209,9 @@ sqliteTest("native ZCode session: disjoint tokens, priced cost, tokens/s and tur
   assert.equal(row.error_count, 1);
   assert.equal(row.compaction_count, 1);
   assert.equal(row.turns, 2);
-  assert.equal(row.retry_turns, 1);
+  assert.equal(row.retry_turns, 0);
+  assert.equal(row.provenance.retry_confidence, "unavailable");
+  assert.equal(row.first_pass, true); // model retry did not repeat the user's request
   assert.equal(row.edit_turns, 1);
   assert.equal(row.productive, true);
   assert.equal(row.usage_precision, "reported");
@@ -420,7 +424,9 @@ sqliteTest("request spans normalize epoch seconds alongside millisecond timestam
   const { dbPath } = buildDb(t, (db) => {
     for (const [id, startedAt] of [["seconds", T0 / 1000], ["milliseconds", T0]]) {
       insertSession(db, { id, directory: "/repo/timestamps", created: T0 });
-      insertModelUsage(db, { id, sessionId: id, startedAt, input: 500, output: 400, durationMs: 10000 });
+      // Different real requests must not share every field of the ledger's
+      // fork-copy fingerprint; this test isolates timestamp-unit handling.
+      insertModelUsage(db, { id, sessionId: id, startedAt, input: 500, output: id === "seconds" ? 400 : 450, durationMs: 10000 });
     }
   });
   const rows = await scanZcodeSessions(dbPath);
@@ -572,6 +578,170 @@ sqliteTest("failed ZCode rebuilds preserve the complete cache and retry unchange
 });
 
 const wslTest = DatabaseSync && process.platform === "win32" ? test : test.skip;
+
+function buildDualDbs(t) {
+  const native = buildDb(t, (db) => {
+    insertSession(db, { id: "shared", directory: "C:\\repo\\shared", title: "Shared native" });
+    insertSession(db, { id: "native-only", directory: "C:\\repo\\native" });
+    insertModelUsage(db, { id: "shared-request", sessionId: "shared", input: 100, output: 1000, durationMs: 2000 });
+    insertModelUsage(db, { id: "native-tail", sessionId: "shared", startedAt: T0 + 3600000, input: 200, output: 1000, durationMs: 4000 });
+    insertModelUsage(db, { id: "native-request", sessionId: "native-only", input: 100, output: 200 });
+    insertTurn(db, "shared", "shared-turn", 3);
+    insertTurn(db, "shared", "native-turn");
+    insertTool(db, "shared", "shared-turn", "Write");
+    insertTool(db, "shared", "native-turn", "Edit");
+  });
+  const other = buildDb(t, (db) => {
+    insertSession(db, { id: "shared", directory: "/repo/shared", title: "Shared mirror" });
+    insertSession(db, { id: "wsl-only", directory: "/repo/wsl" });
+    insertModelUsage(db, { id: "shared-request", sessionId: "shared", input: 100, output: 1000, durationMs: 2000 });
+    insertModelUsage(db, { id: "wsl-tail", sessionId: "shared", startedAt: T0 + 7200000, input: 300, output: 1000, durationMs: 6000 });
+    insertModelUsage(db, { id: "wsl-request", sessionId: "wsl-only", input: 200, output: 300 });
+    insertTurn(db, "shared", "shared-turn", 3);
+    insertTurn(db, "shared", "wsl-turn");
+    insertTool(db, "shared", "shared-turn", "Write");
+    insertTool(db, "shared", "wsl-turn", "Edit");
+  });
+  return { native, other };
+}
+
+sqliteTest("both installs retain distinct sessions and divergent tails without recounting shared event identities", async (t) => {
+  const { native, other } = buildDualDbs(t);
+  const rows = await scanZcodeSessions([native.dbPath, other.dbPath]);
+  assert.equal(rows.length, 3);
+  assert.equal(new Set(rows.map((row) => row.session_hash)).size, 3);
+  assert.equal(rows.reduce((sum, row) => sum + row.total_tokens, 0), 4400);
+  const shared = rows.find((row) => row.session_id === "shared");
+  assert.equal(shared.total_tokens, 3600);
+  assert.equal(shared.usage_events, 3);
+  assert.equal(shared.turns, 3);
+  assert.equal(shared.edit_turns, 3);
+  assert.equal(shared.retry_turns, 0);
+  assert.equal(shared.api_duration_ms, 12000);
+  assert.equal(shared.active_ms, 12000);
+  assert.equal(shared.performance.estimated_request_count, 3);
+  assert.equal(shared.performance.estimated_output_tokens, 3000);
+  assert.equal(shared.title, "Shared native");
+  assert.equal(listSessionsForBrowser(rows).sessions.length, 3);
+});
+
+sqliteTest("ZCode discovery respects every install mode including both on a simulated Windows host", async (t) => {
+  const { native, other } = buildDualDbs(t);
+  for (const [mode, expected] of [
+    ["both", [native.dbPath, other.dbPath]],
+    ["native-only", [native.dbPath]],
+    ["wsl-only", [other.dbPath]],
+    ["native-first", [native.dbPath]],
+    ["wsl-first", [other.dbPath]],
+  ]) {
+    const discovered = await discoverSessionFiles(native.home, {
+      ZCODE_HOME: path.join(native.home, ".zcode"), TOKENTRACKER_WSL_MODE: mode,
+    }, {
+      platform: "win32", probeWsl: true,
+      discoverWslHome: (provider) => provider === ".zcode" ? path.join(other.home, ".zcode") : null,
+    });
+    assert.deepEqual(discovered.zcode, expected, mode);
+  }
+});
+
+sqliteTest("Codex and ZCode lineage remains independent when their session IDs collide", async (t) => {
+  const { dbPath } = buildDb(t, (db) => {
+    insertSession(db, { id: "root" });
+    insertSession(db, { id: "child", parentId: "root" });
+    insertModelUsage(db, { id: "root-request", sessionId: "root", input: 100, output: 200 });
+    insertModelUsage(db, { id: "child-request", sessionId: "child", input: 200, output: 300 });
+  });
+  const zcode = await scanZcodeSessions(dbPath);
+  const codex = zcode.map((row) => ({ ...row, source: "codex", session_hash: `codex-${row.session_id}` }));
+  const browser = listSessionsForBrowser([...zcode, ...codex]).sessions;
+  for (const source of ["codex", "zcode"]) {
+    const root = browser.find((row) => row.source === source && row.session_id === "root");
+    const child = browser.find((row) => row.source === source && row.session_id === "child");
+    assert.equal(root.direct_subagent_count, 1);
+    assert.equal(root.combined_total_tokens, 800);
+    assert.equal(child.parent_session_hash, root.session_hash);
+    assert.equal(child.root_session_hash, root.session_hash);
+    assert.equal(root.parent_link_conflict, false);
+    assert.equal(child.parent_link_conflict, false);
+  }
+  assert.equal(summarizeSessions([...zcode, ...codex]).subagents[0].calls, 2);
+});
+
+sqliteTest("forked ZCode history matches the usage ledger without copied token or speed samples", async (t) => {
+  const { home, dbPath } = buildDb(t, (db) => {
+    insertSession(db, { id: "original" });
+    insertSession(db, { id: "fork", created: T0 + 3600000 });
+    insertModelUsage(db, { id: "1-original", sessionId: "original", input: 100, output: 1000, durationMs: 3000 });
+    insertModelUsage(db, { id: "2-copy", sessionId: "fork", input: 100, output: 1000, durationMs: 3000 });
+    insertModelUsage(db, { id: "3-tail", sessionId: "fork", startedAt: T0 + 3600000, input: 200, output: 1000, durationMs: 4000 });
+  });
+  const queuePath = path.join(home, "queue.jsonl");
+  await parseOpencodeDbIncremental({
+    dbMessages: readZcodeDbMessages(dbPath), dbPath, cursors: {},
+    queuePath, source: "zcode", cursorKey: "zcode",
+  });
+  const latest = new Map(fs.readFileSync(queuePath, "utf8").trim().split("\n").map((line) => {
+    const row = JSON.parse(line);
+    return [`${row.source}:${row.model}:${row.hour_start}`, row];
+  }));
+  const ledgerTotal = [...latest.values()].reduce((sum, row) => sum + row.total_tokens, 0);
+  const rows = await scanZcodeSessions(dbPath);
+  assert.equal(rows.reduce((sum, row) => sum + row.total_tokens, 0), ledgerTotal);
+  assert.equal(ledgerTotal, 2300);
+  const fork = rows.find((row) => row.session_id === "fork");
+  assert.equal(fork.total_tokens, 1200);
+  assert.equal(fork.api_duration_ms, 4000);
+  assert.equal(fork.performance.estimated_request_count, 1);
+  assert.equal(fork.performance.estimated_output_tokens, 1000);
+});
+
+wslTest("both-install cache preserves the complete union across cache hits, appends and read failures", async (t) => {
+  const { native, other } = buildDualDbs(t);
+  const restoreHome = withHome(native.home);
+  const previousZcodeHome = process.env.ZCODE_HOME;
+  const previousMode = process.env.TOKENTRACKER_WSL_MODE;
+  const discoverWslHome = wsl.discoverWslHome;
+  process.env.ZCODE_HOME = path.join(native.home, ".zcode");
+  process.env.TOKENTRACKER_WSL_MODE = "both";
+  wsl.discoverWslHome = (provider) => provider === ".zcode" ? path.join(other.home, ".zcode") : null;
+  try {
+    const first = await buildSessionAnalytics({ home: native.home, force: true });
+    assert.equal(first.length, 3);
+    assert.equal(first.reduce((sum, row) => sum + row.total_tokens, 0), 4400);
+    assert.equal(new Set(first.map((row) => row._cache_key)).size, 3);
+    const cached = await buildSessionAnalytics({ home: native.home, cacheTtlMs: 0 });
+    assert.equal(cached.length, 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const db = new DatabaseSync(other.dbPath);
+    insertSession(db, { id: "new-wsl" });
+    insertModelUsage(db, { id: "new-wsl-request", sessionId: "new-wsl", input: 100, output: 100 });
+    db.close();
+    const appended = await buildSessionAnalytics({ home: native.home, cacheTtlMs: 0 });
+    assert.equal(appended.length, 4);
+    assert.equal(appended.reduce((sum, row) => sum + row.total_tokens, 0), 4600);
+    const sidecar = resolveSessionSidecarPath(native.home);
+    const beforeSidecar = fs.readFileSync(sidecar, "utf8");
+    const beforeMeta = fs.readFileSync(`${sidecar}.meta.json`, "utf8");
+    const healthy = fs.readFileSync(other.dbPath);
+    fs.writeFileSync(other.dbPath, "unreadable sqlite snapshot");
+    for (const force of [false, true]) {
+      const failed = await buildSessionAnalytics({ home: native.home, cacheTtlMs: 0, force });
+      assert.equal(failed.skippedFiles, 1);
+      assert.equal(failed.length, 4);
+      assert.equal(fs.readFileSync(sidecar, "utf8"), beforeSidecar);
+      assert.equal(fs.readFileSync(`${sidecar}.meta.json`, "utf8"), beforeMeta);
+    }
+    fs.writeFileSync(other.dbPath, healthy);
+    assert.equal((await buildSessionAnalytics({ home: native.home, cacheTtlMs: 0 })).skippedFiles, 0);
+  } finally {
+    wsl.discoverWslHome = discoverWslHome;
+    if (previousZcodeHome === undefined) delete process.env.ZCODE_HOME;
+    else process.env.ZCODE_HOME = previousZcodeHome;
+    if (previousMode === undefined) delete process.env.TOKENTRACKER_WSL_MODE;
+    else process.env.TOKENTRACKER_WSL_MODE = previousMode;
+    restoreHome();
+  }
+});
 wslTest("zcode discovery follows the WSL install when no native db exists", async (t) => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-native-empty-"));
   const wslHome = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-wsl-"));

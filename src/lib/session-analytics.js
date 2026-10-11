@@ -28,7 +28,7 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
-const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, normalizeOpencodeModelFields } = require("./rollout");
+const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, normalizeOpencodeModelFields, deriveOpencodeMessageFingerprint } = require("./rollout");
 const { parseCodexRolloutFile } = require("./codex-rollout-parser");
 const { computeRowCost, getModelPricingInfo } = require("./pricing");
 const { normalizePerformance, mergePerformance, createClaudePerformanceCollector, createCodexPerformanceCollector, createZcodePerformanceCollector } = require("./session-performance");
@@ -77,7 +77,9 @@ const {
 // scanning to many per-session rows — so every cached row is rebuilt.
 // v18 corrects ZCode project keys and request timestamp units, and invalidates
 // inventories that earlier builds may have cached after a failed database read.
-const SIDECAR_VERSION = 18;
+// v19 scans both ZCode installs as one deduplicated inventory and separates
+// provider retries from repeated user requests.
+const SIDECAR_VERSION = 19;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1229,42 +1231,109 @@ const ZCODE_SIGNAL_REQUIRED_COLUMNS = [
 // whole scan (metadata, signals, turns, tools, messages) against the local
 // copy — otherwise the metadata query succeeds while the message read fails
 // on the same database.
-async function scanZcodeSessions(dbPath) {
-  let snapshot = null;
-  let effectiveDbPath = dbPath;
-  if (wsl.isUncPath(dbPath)) {
-    try {
-      snapshot = wsl.snapshotSqliteDb(dbPath);
-      effectiveDbPath = snapshot.path;
-    } catch (_error) {
-      // Fall through to the direct read: some UNC servers do honor SQLite's
-      // read-only locking, and the queries themselves decide otherwise.
-    }
-  }
+async function scanZcodeSessions(dbPaths) {
+  const paths = [...new Set((Array.isArray(dbPaths) ? dbPaths : [dbPaths]).filter(Boolean))];
+  const snapshots = [];
+  const inputs = [];
   try {
-    return await scanZcodeSessionsFromDb(effectiveDbPath, dbPath);
+    for (const dbPath of paths) {
+      let effectiveDbPath = dbPath;
+      if (wsl.isUncPath(dbPath)) {
+        try {
+          const snapshot = wsl.snapshotSqliteDb(dbPath);
+          snapshots.push(snapshot);
+          effectiveDbPath = snapshot.path;
+        } catch (_error) { /* Direct read decides whether this UNC server supports SQLite. */ }
+      }
+      inputs.push(readZcodeSessionInputs(effectiveDbPath));
+    }
+    return buildZcodeSessionRecords(inputs, paths[0]);
   } finally {
-    if (snapshot) snapshot.cleanup();
+    for (const snapshot of snapshots) snapshot.cleanup();
   }
 }
 
-async function scanZcodeSessionsFromDb(dbPath, displayPath) {
+/** Read metadata and numeric events from one database; real read failures propagate. */
+function readZcodeSessionInputs(dbPath) {
+  const options = { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, readOnly: true, throwOnReadFailure: true };
   const sessionColumns = zcodeTableColumns(dbPath, "session");
-  if (!sessionColumns.has("id")) return [];
+  if (!sessionColumns.has("id")) return { sessionRows: [], messages: [], requestRows: [], turnRows: [], toolRows: [] };
   const optionalColumns = ["parent_id", "directory", "title", "time_created", "time_updated"];
   const selectColumns = ["id", ...optionalColumns.filter((name) => sessionColumns.has(name))];
   const orderBy = sessionColumns.has("time_created") ? " ORDER BY time_created ASC, id ASC" : " ORDER BY id ASC";
   const sessionRows = readSqliteJsonRows(
     dbPath,
     `SELECT ${selectColumns.join(", ")} FROM session${orderBy}`,
-    { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
+    options,
   );
+  const messages = readZcodeDbMessages(dbPath, { readOnly: true }, { propagateReadFailure: true });
+  const modelUsageColumns = zcodeTableColumns(dbPath, "model_usage");
+  const requestRows = ZCODE_SIGNAL_REQUIRED_COLUMNS.every((name) => modelUsageColumns.has(name))
+    ? readSqliteJsonRows(dbPath, `SELECT id, session_id, model_id, status, started_at, output_tokens, duration_ms, time_to_first_token_ms, query_source
+       FROM model_usage
+       WHERE status IN ('completed', 'error')
+         AND trim(provider_id) != ''
+         AND provider_id NOT LIKE '%anthropic%'
+         AND provider_id NOT LIKE '%openai%'
+         AND provider_id NOT LIKE '%google%'
+       ORDER BY started_at ASC, id ASC`, options)
+    : [];
+  const turnColumns = zcodeTableColumns(dbPath, "turn_usage");
+  const turnRows = turnColumns.has("session_id")
+    ? readSqliteJsonRows(dbPath, `SELECT session_id${turnColumns.has("turn_id") ? ", turn_id" : ""} FROM turn_usage`, options)
+    : [];
+  const toolColumns = zcodeTableColumns(dbPath, "tool_usage");
+  const toolRows = ["session_id", "tool_name", "turn_id"].every((name) => toolColumns.has(name))
+    ? readSqliteJsonRows(dbPath, "SELECT session_id, turn_id, tool_name FROM tool_usage", options)
+    : [];
+  return { sessionRows, messages, requestRows, turnRows, toolRows };
+}
+
+/** Merge only shared event identities, retaining both installs' distinct tails. */
+function uniqueZcodeRows(rows, keyFor) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = keyFor(row);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildZcodeSessionRecords(inputs, displayPath) {
+  const collect = (key) => inputs.flatMap((input) => input[key] || []);
+  const eventKey = (row, sessionKey, idKey) => row?.[sessionKey] && row?.[idKey]
+    ? `${row[sessionKey]}\u0000${row[idKey]}` : null;
+  const sessionRows = uniqueZcodeRows(collect("sessionRows"), (row) => row?.id);
+  const fingerprintOwners = new Map();
+  const forkCopies = new Set();
+  const messages = uniqueZcodeRows(collect("messages"), (row) => eventKey(row, "sessionID", "id"))
+    .filter((message) => {
+      // Use the ledger's existing narrow fork-copy contract, including both
+      // timestamps, all token columns, model and provider. Never dedup two
+      // separate turns within one session by counters alone.
+      const fingerprint = deriveOpencodeMessageFingerprint({
+        msg: message.data, totals: zcodeMessageTotals(message.data), source: "zcode",
+      });
+      const owner = fingerprint && fingerprintOwners.get(fingerprint);
+      if (owner && owner !== message.sessionID) {
+        forkCopies.add(eventKey(message, "sessionID", "id"));
+        return false;
+      }
+      if (fingerprint) fingerprintOwners.set(fingerprint, message.sessionID);
+      return true;
+    });
+  const requestRows = uniqueZcodeRows(collect("requestRows"), (row) => eventKey(row, "session_id", "id"))
+    .filter((row) => !forkCopies.has(eventKey(row, "session_id", "id")));
+  const turnRows = uniqueZcodeRows(collect("turnRows"), (row) => eventKey(row, "session_id", "turn_id"));
+  const toolRows = collect("toolRows");
 
   const messagesBySession = new Map();
   // propagateReadFailure: a failed native-usage query must abort the scan (the
   // caller counts the db as skipped) rather than silently degrade to the
   // legacy tables and cache a zero-token inventory for those sessions.
-  for (const message of readZcodeDbMessages(dbPath, {}, { propagateReadFailure: true })) {
+  for (const message of messages) {
     const sessionId = String(message?.sessionID || "").trim();
     if (!sessionId) continue;
     let group = messagesBySession.get(sessionId);
@@ -1281,117 +1350,80 @@ async function scanZcodeSessionsFromDb(dbPath, displayPath) {
   // rows ZCode orchestrated through claude/codex/gemini sub-agents already
   // appear as their own provider's sessions and must not skew signals either.
   const signalsBySession = new Map();
-  const modelUsageColumns = zcodeTableColumns(dbPath, "model_usage");
-  if (ZCODE_SIGNAL_REQUIRED_COLUMNS.every((name) => modelUsageColumns.has(name))) {
-    const requestRows = readSqliteJsonRows(
-      dbPath,
-      `SELECT session_id, model_id, status, started_at, output_tokens, duration_ms, time_to_first_token_ms, query_source
-       FROM model_usage
-       WHERE status IN ('completed', 'error')
-         AND trim(provider_id) != ''
-         AND provider_id NOT LIKE '%anthropic%'
-         AND provider_id NOT LIKE '%openai%'
-         AND provider_id NOT LIKE '%google%'
-       ORDER BY started_at ASC, id ASC`,
-      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
-    );
-    for (const row of Array.isArray(requestRows) ? requestRows : []) {
-      const sessionId = String(row?.session_id || "").trim();
-      if (!sessionId) continue;
-      let signals = signalsBySession.get(sessionId);
-      if (!signals) {
-        signals = {
-          collector: createZcodePerformanceCollector(),
-          apiDurationMs: 0,
-          compactionCount: 0,
-          errorCount: 0,
-          // Request wall-clock extremes from model_usage. Messages only carry
-          // startedAt (the reader maps it to timeUpdated), so without these the
-          // last generation's duration never reaches ended_at and a session's
-          // final request reports a zero-length span.
-          firstRequestIso: null,
-          lastRequestEndIso: null,
-          // [startMs, endMs] per request for the active-time union below.
-          activeSpans: [],
-        };
-        signalsBySession.set(sessionId, signals);
-      }
-      // Match readZcodeNativeUsageMessages: databases may store epoch seconds
-      // or milliseconds, but request spans and message bounds must share units.
-      const rawStart = Number(row?.started_at);
-      const requestStartMs = Number.isFinite(rawStart) && rawStart > 0
-        ? Math.floor(rawStart < 1e12 ? rawStart * 1000 : rawStart)
-        : 0;
-      if (Number.isFinite(requestStartMs) && requestStartMs > 0) {
-        const startIso = new Date(requestStartMs).toISOString();
-        if (!signals.firstRequestIso || startIso < signals.firstRequestIso) signals.firstRequestIso = startIso;
-        // duration_ms only exists on completed rows; an error request still
-        // occupied its start instant, so its end falls back to the start.
-        const durationMs = row.status === "completed" ? finite(row.duration_ms) : 0;
-        const endIso = new Date(requestStartMs + durationMs).toISOString();
-        if (!signals.lastRequestEndIso || endIso > signals.lastRequestEndIso) signals.lastRequestEndIso = endIso;
-        signals.activeSpans.push([requestStartMs, requestStartMs + durationMs]);
-      }
-      if (row.status === "error") {
-        signals.errorCount += 1;
-        continue;
-      }
-      if (row.query_source === "compact") signals.compactionCount += 1;
-      signals.apiDurationMs += finite(row.duration_ms);
-      signals.collector.consumeUsage({
-        model: normalizeSessionModel(row.model_id) || "unknown",
-        outputTokens: finite(row.output_tokens),
-        durationMs: finite(row.duration_ms),
-        timeToFirstTokenMs: typeof row.time_to_first_token_ms === "number" ? row.time_to_first_token_ms : undefined,
-      });
+  for (const row of requestRows) {
+    const sessionId = String(row?.session_id || "").trim();
+    if (!sessionId) continue;
+    let signals = signalsBySession.get(sessionId);
+    if (!signals) {
+      signals = {
+        collector: createZcodePerformanceCollector(),
+        apiDurationMs: 0,
+        compactionCount: 0,
+        errorCount: 0,
+        // Request wall-clock extremes from model_usage. Messages only carry
+        // startedAt (the reader maps it to timeUpdated), so without these the
+        // last generation's duration never reaches ended_at and a session's
+        // final request reports a zero-length span.
+        firstRequestIso: null,
+        lastRequestEndIso: null,
+        // [startMs, endMs] per request for the active-time union below.
+        activeSpans: [],
+      };
+      signalsBySession.set(sessionId, signals);
     }
+    // Match readZcodeNativeUsageMessages: databases may store epoch seconds
+    // or milliseconds, but request spans and message bounds must share units.
+    const rawStart = Number(row?.started_at);
+    const requestStartMs = Number.isFinite(rawStart) && rawStart > 0
+      ? Math.floor(rawStart < 1e12 ? rawStart * 1000 : rawStart)
+      : 0;
+    if (Number.isFinite(requestStartMs) && requestStartMs > 0) {
+      const startIso = new Date(requestStartMs).toISOString();
+      if (!signals.firstRequestIso || startIso < signals.firstRequestIso) signals.firstRequestIso = startIso;
+      // duration_ms only exists on completed rows; an error request still
+      // occupied its start instant, so its end falls back to the start.
+      const durationMs = row.status === "completed" ? finite(row.duration_ms) : 0;
+      const endIso = new Date(requestStartMs + durationMs).toISOString();
+      if (!signals.lastRequestEndIso || endIso > signals.lastRequestEndIso) signals.lastRequestEndIso = endIso;
+      signals.activeSpans.push([requestStartMs, requestStartMs + durationMs]);
+    }
+    if (row.status === "error") {
+      signals.errorCount += 1;
+      continue;
+    }
+    if (row.query_source === "compact") signals.compactionCount += 1;
+    signals.apiDurationMs += finite(row.duration_ms);
+    signals.collector.consumeUsage({
+      model: normalizeSessionModel(row.model_id) || "unknown",
+      outputTokens: finite(row.output_tokens),
+      durationMs: finite(row.duration_ms),
+      timeToFirstTokenMs: typeof row.time_to_first_token_ms === "number" ? row.time_to_first_token_ms : undefined,
+    });
   }
-
   const turnsBySession = new Map();
-  const retryTurnsBySession = new Map();
-  const turnColumns = zcodeTableColumns(dbPath, "turn_usage");
-  if (turnColumns.has("session_id")) {
-    const retrySelect = turnColumns.has("model_retry_count") ? ", model_retry_count" : "";
-    const turnRows = readSqliteJsonRows(
-      dbPath,
-      `SELECT session_id${retrySelect} FROM turn_usage`,
-      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
-    );
-    for (const row of Array.isArray(turnRows) ? turnRows : []) {
-      const sessionId = String(row?.session_id || "").trim();
-      if (!sessionId) continue;
-      turnsBySession.set(sessionId, (turnsBySession.get(sessionId) || 0) + 1);
-      if (finite(row.model_retry_count) > 0) {
-        retryTurnsBySession.set(sessionId, (retryTurnsBySession.get(sessionId) || 0) + 1);
-      }
-    }
+  for (const row of turnRows) {
+    const sessionId = String(row?.session_id || "").trim();
+    if (!sessionId) continue;
+    turnsBySession.set(sessionId, (turnsBySession.get(sessionId) || 0) + 1);
   }
 
   // ZCode writes Capitalized tool names (Edit/Write); EDIT_TOOLS is lowercase.
   // An edit turn is a turn that used an edit tool, matching the Grok definition.
   const editTurnsBySession = new Map();
-  const toolColumns = zcodeTableColumns(dbPath, "tool_usage");
-  if (toolColumns.has("session_id") && toolColumns.has("tool_name") && toolColumns.has("turn_id")) {
-    const toolRows = readSqliteJsonRows(
-      dbPath,
-      "SELECT session_id, turn_id, tool_name FROM tool_usage",
-      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
-    );
-    const editTurnIds = new Map();
-    for (const row of Array.isArray(toolRows) ? toolRows : []) {
-      if (!EDIT_TOOLS.has(String(row?.tool_name || "").toLowerCase())) continue;
-      const sessionId = String(row?.session_id || "").trim();
-      const turnId = String(row?.turn_id || "").trim();
-      if (!sessionId || !turnId) continue;
-      let turns = editTurnIds.get(sessionId);
-      if (!turns) {
-        turns = new Set();
-        editTurnIds.set(sessionId, turns);
-      }
-      turns.add(turnId);
+  const editTurnIds = new Map();
+  for (const row of toolRows) {
+    if (!EDIT_TOOLS.has(String(row?.tool_name || "").toLowerCase())) continue;
+    const sessionId = String(row?.session_id || "").trim();
+    const turnId = String(row?.turn_id || "").trim();
+    if (!sessionId || !turnId) continue;
+    let turns = editTurnIds.get(sessionId);
+    if (!turns) {
+      turns = new Set();
+      editTurnIds.set(sessionId, turns);
     }
-    for (const [sessionId, turns] of editTurnIds) editTurnsBySession.set(sessionId, turns.size);
+    turns.add(turnId);
   }
+  for (const [sessionId, turns] of editTurnIds) editTurnsBySession.set(sessionId, turns.size);
 
   const records = [];
   for (const row of Array.isArray(sessionRows) ? sessionRows : []) {
@@ -1518,7 +1550,9 @@ async function scanZcodeSessionsFromDb(dbPath, displayPath) {
       ...bounds,
       turns: turnsBySession.get(sessionId) || 0,
       edit_turns: editTurnsBySession.get(sessionId) || 0,
-      retry_turns: retryTurnsBySession.get(sessionId) || 0,
+      // Provider/API retries are not repeated user requests. This numeric
+      // metadata has no user-prompt repetition evidence.
+      retry_turns: 0,
       tokens,
       usage_events: messages.length,
       usage_precision: messages.length > 0 ? "reported" : "unavailable",
@@ -1532,7 +1566,7 @@ async function scanZcodeSessionsFromDb(dbPath, displayPath) {
       provenance: {
         source: "local-session-log",
         confidence: "observed",
-        retry_confidence: "inferred",
+        retry_confidence: "unavailable",
         content_retained: false,
         usage: messages.length > 0 ? "zcode-db-messages" : "unavailable",
       },
@@ -1770,12 +1804,10 @@ async function discoverSessionFiles(home, env = process.env, deps = {}) {
   // it like the usage sync does (src/commands/sync.js): native candidate first
   // (ZCODE_HOME, home, win32 APPDATA fallback), then the WSL install when the
   // WSL mode probes it, picked with the same mode priority (default wsl-first)
-  // so the browser reads the same db the usage card counts. Unlike sync's
-  // "both" mode — which reads two dbs and dedups them by message fingerprint —
-  // the session scan has no cross-db identity, so it always keeps exactly one
-  // db rather than risk double-counting one install under two path spellings.
+  // so the browser reads the same installs the usage card counts. "both"
+  // preserves both paths; the scanner merges shared session/event identities.
   const zcodePlatform = deps.platform || process.platform;
-  const zcodeNativeDbPath = (deps.resolveZcodeNativeDbPath || resolveZcodeNativeDbPath)({ home, env });
+  const zcodeNativeDbPath = (deps.resolveZcodeNativeDbPath || resolveZcodeNativeDbPath)({ home, env, platform: zcodePlatform });
   // Same WSL gate as providerRoots(): discoverWslHome resolves \\wsl$
   // independently of `home`, so a custom/injected home must not splice the
   // machine's live WSL db into an isolated scan. `probeWsl` is the deliberate
@@ -1788,13 +1820,15 @@ async function discoverSessionFiles(home, env = process.env, deps = {}) {
     : null;
   const zcodeExisting = (dbPath) => (dbPath && fs.existsSync(dbPath) ? dbPath : null);
   const zcodeWslDbPath = zcodeWslHome ? path.join(zcodeWslHome, "cli", "db", "db.sqlite") : null;
-  const zcodeDbPath = zcodePlatform === "win32"
-    ? (deps.pickWin32Path || wsl.pickWin32Path)({
+  const zcodePaths = zcodePlatform === "win32"
+    ? wsl.resolveAllWin32Paths({
       nativeValue: zcodeExisting(zcodeNativeDbPath),
       wslValue: zcodeExisting(zcodeWslDbPath),
-    }, env)
-    : zcodeExisting(zcodeNativeDbPath);
-  const zcode = zcodeDbPath ? [zcodeDbPath] : [];
+      env,
+      platform: zcodePlatform,
+    })
+    : { native: zcodeExisting(zcodeNativeDbPath), wsl: null };
+  const zcode = [...new Set(Object.values(zcodePaths).filter(Boolean))];
   return { claude, codex: groupCodexFiles([...codex, ...archived]), grok, zcode, incomplete };
 }
 
@@ -1903,8 +1937,8 @@ function analyticsEntryStatKey(source, filePath) {
   if (source === "zcode") {
     // A WAL-mode db can absorb writes without touching the main file's mtime,
     // so the sidecar files are part of the db's identity for cache checks.
-    const primary = filePaths[0];
-    return `${sessionStat}|wal:${sessionFileStatKey(`${primary}-wal`) || "missing"}|shm:${sessionFileStatKey(`${primary}-shm`) || "missing"}`;
+    return `${sessionStat}|sidecars:${filePaths.map((filePath) =>
+      `wal:${sessionFileStatKey(`${filePath}-wal`) || "missing"}|shm:${sessionFileStatKey(`${filePath}-shm`) || "missing"}`).join("|")}`;
   }
   return sessionStat;
 }
@@ -1990,7 +2024,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     ...discovered.claude.map((filePaths) => ({ source: "claude", filePath: filePaths, scan: scanClaudeSession })),
     ...discovered.codex.map((filePaths) => ({ source: "codex", filePath: filePaths, scan: scanCodexSession })),
     ...discovered.grok.map((filePath) => ({ source: "grok", filePath, scan: scanGrokSession })),
-    ...discovered.zcode.map((filePath) => ({ source: "zcode", filePath, scan: scanZcodeSessions })),
+    ...(discovered.zcode.length ? [{ source: "zcode", filePath: discovered.zcode, scan: scanZcodeSessions }] : []),
   ];
   // Files we could not turn into a row (permission denied, half-written line,
   // vanished mid-scan). Swallowing these silently made sessions disappear with
@@ -2040,14 +2074,14 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       // separate path element would be path.resolve()d against the process cwd
       // and never match across runs.
       row._cache_key = entry.source === "zcode" && row.session_id
-        ? sessionFileCacheKey("zcode", `${entry.filePath}#${row.session_id}`)
+        ? `${cacheKey}#${sessionHash("zcode", row.session_id)}`
         : cacheKey;
       sessions.push(row);
     }
     if (rows.length > 0) nextFiles[cacheKey] = { stat_key: statKey };
   }
   if (incompleteZcodeScan) {
-    // Discovery selects one ZCode database. If it fails, retain its last
+    // ZCode databases form one deduplicated inventory. If any read fails, retain its last
     // complete rows even on a forced refresh; skippedFiles still reports that
     // these rows could not be refreshed. Older cache schemas must be rebuilt.
     sessions.push(...readSidecar(sidecarPath).filter((row) =>
@@ -2534,25 +2568,26 @@ function annotateThreadUsage(rows) {
   const byId = new Map();
   const childrenById = new Map();
   const linkedParentById = new Map();
+  const identity = (row, id = row.session_id) => `${row.source}\u0000${id}`;
 
   for (const row of rows || []) {
     if ((row?.source !== "codex" && row?.source !== "zcode") || typeof row.session_id !== "string" || !row.session_id) continue;
-    const existing = byId.get(row.session_id);
+    const existing = byId.get(identity(row));
     if (existing && existing !== row) {
       existing.parent_link_conflict = true;
       row.parent_link_conflict = true;
       continue;
     }
-    byId.set(row.session_id, row);
+    byId.set(identity(row), row);
   }
 
   function hasParentCycle(start) {
     const seen = new Set();
     let current = start;
-    while (current?.parent_session_id && byId.has(current.parent_session_id)) {
-      if (seen.has(current.session_id) || current.parent_session_id === current.session_id) return true;
-      seen.add(current.session_id);
-      current = byId.get(current.parent_session_id);
+    while (current?.parent_session_id && byId.has(identity(current, current.parent_session_id))) {
+      if (seen.has(identity(current)) || current.parent_session_id === current.session_id) return true;
+      seen.add(identity(current));
+      current = byId.get(identity(current, current.parent_session_id));
     }
     return false;
   }
@@ -2560,48 +2595,49 @@ function annotateThreadUsage(rows) {
   for (const row of byId.values()) {
     const parentId = typeof row.parent_session_id === "string" ? row.parent_session_id.trim() : "";
     if (!parentId) continue;
+    const parentKey = identity(row, parentId);
     if (row.parent_link_conflict || hasParentCycle(row)) {
       row.parent_link_conflict = true;
       continue;
     }
-    if (!byId.has(parentId)) {
+    if (!byId.has(parentKey)) {
       row.orphaned_subagent = true;
       continue;
     }
-    const children = childrenById.get(parentId) || [];
+    const children = childrenById.get(parentKey) || [];
     children.push(row);
-    childrenById.set(parentId, children);
-    linkedParentById.set(row.session_id, parentId);
+    childrenById.set(parentKey, children);
+    linkedParentById.set(identity(row), parentKey);
   }
 
   const memo = new Map();
   function aggregate(row, visiting = new Set()) {
-    if (memo.has(row.session_id)) return memo.get(row.session_id);
-    if (visiting.has(row.session_id)) {
+    if (memo.has(identity(row))) return memo.get(identity(row));
+    if (visiting.has(identity(row))) {
       row.parent_link_conflict = true;
       return { count: 0, tokens: 0, cost: 0 };
     }
     const nextVisiting = new Set(visiting);
-    nextVisiting.add(row.session_id);
+    nextVisiting.add(identity(row));
     let count = 0;
     let tokens = 0;
     let cost = 0;
-    for (const child of childrenById.get(row.session_id) || []) {
+    for (const child of childrenById.get(identity(row)) || []) {
       const nested = aggregate(child, nextVisiting);
       count += 1 + nested.count;
       tokens += finite(child.total_tokens) + nested.tokens;
       cost += finite(child.cost_usd) + nested.cost;
     }
     const result = { count, tokens, cost };
-    memo.set(row.session_id, result);
+    memo.set(identity(row), result);
     return result;
   }
 
   function rootFor(row) {
-    const seen = new Set([row.session_id]);
+    const seen = new Set([identity(row)]);
     let current = row;
-    while (current && linkedParentById.has(current.session_id)) {
-      const linkedParentId = linkedParentById.get(current.session_id);
+    while (current && linkedParentById.has(identity(current))) {
+      const linkedParentId = linkedParentById.get(identity(current));
       if (seen.has(linkedParentId)) {
         row.parent_link_conflict = true;
         break;
@@ -2618,7 +2654,7 @@ function annotateThreadUsage(rows) {
     row.own_total_tokens = finite(row.total_tokens);
     row.own_cost_usd = finite(row.cost_usd);
     row.direct_subagent_count = threadAware
-      ? (childrenById.get(row.session_id) || []).length
+      ? (childrenById.get(identity(row)) || []).length
       : 0;
     const nested = threadAware
       ? aggregate(row)
@@ -2629,7 +2665,7 @@ function annotateThreadUsage(rows) {
     row.combined_total_tokens = finite(row.total_tokens) + nested.tokens;
     row.combined_cost_usd = finite(row.cost_usd) + nested.cost;
     if (threadAware) {
-      const parent = byId.get(linkedParentById.get(row.session_id));
+      const parent = byId.get(linkedParentById.get(identity(row)));
       row.parent_session_hash = parent?.session_hash || null;
       row.root_session_hash = rootFor(row).session_hash || row.session_hash;
     }

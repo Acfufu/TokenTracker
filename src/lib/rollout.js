@@ -24624,6 +24624,7 @@ module.exports = {
   parseGeminiIncremental,
   parseOpencodeIncremental,
   parseOpencodeDbIncremental,
+  deriveOpencodeMessageFingerprint,
   parseQoderDbIncremental,
   openclawCursorKey,
   parseOpenclawIncremental,
