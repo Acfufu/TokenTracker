@@ -80,7 +80,8 @@ const {
 // v19 scans both ZCode installs as one deduplicated inventory and separates
 // provider retries from repeated user requests.
 // v20 also invalidates unchanged-stat caches after an observed database lock.
-const SIDECAR_VERSION = 20;
+// v21 retains the request count when several ZCode events share a minute.
+const SIDECAR_VERSION = 21;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1461,8 +1462,9 @@ function buildZcodeSessionRecords(inputs, displayPath) {
         // bills its whole lifetime to every day it touches.
         const timestamp = new Date(Math.floor(timeUpdated / 60_000) * 60_000).toISOString();
         const bucketKey = `${timestamp}\u0000${model}`;
-        const bucket = usageBuckets.get(bucketKey) || { timestamp, model, ...emptyTotals() };
+        const bucket = usageBuckets.get(bucketKey) || { timestamp, model, ...emptyTotals(), usage_events: 0 };
         addTotals(bucket, delta);
+        bucket.usage_events += 1;
         usageBuckets.set(bucketKey, bucket);
       }
       if (!messageCwd && typeof data.path?.cwd === "string" && data.path.cwd.trim()) {

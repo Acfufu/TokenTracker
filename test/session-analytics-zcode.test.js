@@ -232,6 +232,10 @@ sqliteTest("native ZCode session: disjoint tokens, priced cost, tokens/s and tur
   const bucket2 = row.usage_buckets.find((b) => b.timestamp === iso(T0 + 60000));
   assert.equal(bucket1.total_tokens, 100 + 1000 + 1000);
   assert.equal(bucket2.total_tokens, 100 + 500 + 50 + 200 + 300);
+  assert.equal(bucket1.usage_events, 1);
+  assert.equal(bucket2.usage_events, 2);
+  const day = iso(T0).slice(0, 10);
+  assert.equal(listSessionsForBrowser(rows, { from: day, to: day }).sessions[0].model_usage[0].usage_events, 3);
 });
 
 sqliteTest("legacy OpenCode message table feeds sessions that model_usage never covers", async (t) => {

@@ -19,7 +19,7 @@ New activity since the v1.3.5 publication was concentrated in [PR #779](https://
 - Session lineage is keyed by source and session ID throughout parent lookup, cycle detection, aggregation and root resolution. Identical Codex and ZCode IDs cannot connect unrelated parents or children. ZCode children participate in observed subagent summaries.
 - Model/API retry counts do not become repeated user requests. The native numeric records provide no prompt-repetition evidence, so retry provenance is unavailable rather than inferred from model retries.
 - The cache signature includes every selected database and its WAL/SHM sidecars. A failed read retains the last complete ZCode inventory and cache metadata, reports skipped files, and retries rather than caching an empty or partial inventory. A separate durable marker invalidates TTL, signature and per-file reuse after a real SQLite lock that leaves file stats unchanged. UNC reads use one local snapshot per database; metadata queries are read-only.
-- The sidecar schema is version 20 so older cached metrics are rebuilt. Minute usage buckets feed the existing local-day filters and preserve token-category/model parity in details and descendant totals.
+- The sidecar schema is version 21 so older cached metrics are rebuilt. Minute usage buckets retain the number of requests sharing each minute, feed the existing local-day filters and preserve token-category/model parity in details and descendant totals.
 
 ## Validation
 
