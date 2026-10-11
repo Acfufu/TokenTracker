@@ -28,7 +28,7 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
-const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, normalizeOpencodeModelFields, deriveOpencodeMessageFingerprint } = require("./rollout");
+const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, coerceEpochMs, normalizeOpencodeModelFields, deriveOpencodeMessageFingerprint } = require("./rollout");
 const { parseCodexRolloutFile } = require("./codex-rollout-parser");
 const { computeRowCost, getModelPricingInfo } = require("./pricing");
 const { normalizePerformance, mergePerformance, createClaudePerformanceCollector, createCodexPerformanceCollector, createZcodePerformanceCollector } = require("./session-performance");
@@ -1373,11 +1373,8 @@ function buildZcodeSessionRecords(inputs, displayPath) {
     }
     // Match readZcodeNativeUsageMessages: databases may store epoch seconds
     // or milliseconds, but request spans and message bounds must share units.
-    const rawStart = Number(row?.started_at);
-    const requestStartMs = Number.isFinite(rawStart) && rawStart > 0
-      ? Math.floor(rawStart < 1e12 ? rawStart * 1000 : rawStart)
-      : 0;
-    if (Number.isFinite(requestStartMs) && requestStartMs > 0) {
+    const requestStartMs = coerceEpochMs(row?.started_at);
+    if (requestStartMs > 0) {
       const startIso = new Date(requestStartMs).toISOString();
       if (!signals.firstRequestIso || startIso < signals.firstRequestIso) signals.firstRequestIso = startIso;
       // duration_ms only exists on completed rows; an error request still

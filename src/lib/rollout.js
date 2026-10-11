@@ -24589,6 +24589,7 @@ module.exports = {
   readOpencodeDbMessagesIncremental,
   readMimoDbMessages,
   readZcodeDbMessages,
+  coerceEpochMs,
   normalizeOpencodeModelFields,
   hasZcodeNativeUsageSchema,
   resolveQoderDbPath,
