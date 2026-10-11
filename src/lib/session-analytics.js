@@ -75,7 +75,9 @@ const {
 // v15/v16 tighten Codex delivery-signal parsing (uncommented bump).
 // v17 adds ZCode sessions from ~/.zcode/cli/db/db.sqlite — one SQLite db
 // scanning to many per-session rows — so every cached row is rebuilt.
-const SIDECAR_VERSION = 17;
+// v18 corrects ZCode project keys and request timestamp units, and invalidates
+// inventories that earlier builds may have cached after a failed database read.
+const SIDECAR_VERSION = 18;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1314,7 +1316,12 @@ async function scanZcodeSessionsFromDb(dbPath, displayPath) {
         };
         signalsBySession.set(sessionId, signals);
       }
-      const requestStartMs = Number(row?.started_at);
+      // Match readZcodeNativeUsageMessages: databases may store epoch seconds
+      // or milliseconds, but request spans and message bounds must share units.
+      const rawStart = Number(row?.started_at);
+      const requestStartMs = Number.isFinite(rawStart) && rawStart > 0
+        ? Math.floor(rawStart < 1e12 ? rawStart * 1000 : rawStart)
+        : 0;
       if (Number.isFinite(requestStartMs) && requestStartMs > 0) {
         const startIso = new Date(requestStartMs).toISOString();
         if (!signals.firstRequestIso || startIso < signals.firstRequestIso) signals.firstRequestIso = startIso;
@@ -1502,7 +1509,8 @@ async function scanZcodeSessionsFromDb(dbPath, displayPath) {
       // Local-only: stripped in summarizeSessions before any cloud/CSV export.
       title: cleanSessionTitle(row?.title),
       source: "zcode",
-      project_key: projectKey(cwd, displayPath),
+      // A database copied between Windows and POSIX retains its original cwd.
+      project_key: projectKey(cwd && cwd.replace(/\\/g, "/"), displayPath),
       project_ref: cwd || null,
       model: modelUsage.length > 1 ? "mixed" : (modelUsage[0]?.model || "unknown"),
       model_usage: modelUsage,
@@ -1988,11 +1996,13 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
   // vanished mid-scan). Swallowing these silently made sessions disappear with
   // no signal at all; count them so the API can say so.
   let skippedFiles = 0;
+  let incompleteZcodeScan = false;
   for (const entry of entries) {
     const cacheKey = sessionFileCacheKey(entry.source, entry.filePath);
     const statKey = analyticsEntryStatKey(entry.source, entry.filePath);
     if (!statKey) {
       skippedFiles += 1;
+      if (entry.source === "zcode") incompleteZcodeScan = true;
       continue;
     }
     let rows = null;
@@ -2015,6 +2025,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
         // One active/partial session must not poison the sidecar, but do not
         // pretend it never existed either.
         skippedFiles += 1;
+        if (entry.source === "zcode") incompleteZcodeScan = true;
         if (!process.env.NODE_TEST_CONTEXT) {
           console.warn(`[session-analytics] skipped ${entry.source} session file: ${error?.message || error}`);
         }
@@ -2036,7 +2047,9 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     if (rows.length > 0) nextFiles[cacheKey] = { stat_key: statKey };
   }
   sessions.sort((a, b) => String(b.ended_at || "").localeCompare(String(a.ended_at || "")));
-  if (incompleteDirs.length === 0) {
+  // A failed database scan is an incomplete inventory. Keep the last complete
+  // snapshot and signature so an unchanged database is retried next build.
+  if (incompleteDirs.length === 0 && !incompleteZcodeScan) {
     const content = sessions.map(serializeSessionRecord).join("\n") + (sessions.length ? "\n" : "");
     await writeAtomic(sidecarPath, content);
     const generatedAt = new Date().toISOString();
@@ -2224,7 +2237,7 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
       if (key === primaryModel) agg.retries += finite(row.retry_turns);
       byModel.set(key, agg);
     }
-    if (row.source === "codex" && row.parent_session_hash) {
+    if ((row.source === "codex" || row.source === "zcode") && row.parent_session_hash) {
       const name = row.agent_role || row.agent_nickname || "subagent";
       const sub = subagents.get(name) || {
         name,
@@ -2241,9 +2254,9 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
       subagents.set(name, sub);
       continue;
     }
-    // Codex child rollouts are first-class rows. A spawn call in the parent is
+    // Codex and ZCode children are first-class rows. A spawn call in the parent is
     // a control-plane event, not token usage, so do not mix in an estimate.
-    if (row.source === "codex") continue;
+    if (row.source === "codex" || row.source === "zcode") continue;
     for (const [name, calls] of Object.entries(row.subagent_types || {})) {
       const sub = subagents.get(name) || { name, calls: 0, sessions: 0, total_tokens: 0, cost_usd: 0 };
       sub.calls += finite(calls);

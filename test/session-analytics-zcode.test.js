@@ -16,6 +16,8 @@ const {
   discoverSessionFiles,
   buildSessionAnalytics,
   listSessionsForBrowser,
+  summarizeSessions,
+  resolveSessionSidecarPath,
 } = require("../src/lib/session-analytics");
 const { readZcodeDbMessages } = require("../src/lib/rollout");
 
@@ -314,6 +316,14 @@ sqliteTest("browser rows keep parity with the usage reader and drop usage-less s
   assert.equal(child.root_session_hash, root.session_hash);
   assert.equal(root.direct_subagent_count, 1);
   assert.equal(root.combined_total_tokens, root.total_tokens + child.total_tokens);
+  const summary = summarizeSessions(scanned);
+  assert.equal(summary.subagents.length, 1);
+  assert.equal(summary.subagents[0].name, "subagent");
+  assert.equal(summary.subagents[0].calls, 1);
+  assert.equal(summary.subagents[0].sessions, 1);
+  assert.equal(summary.subagents[0].total_tokens, child.total_tokens);
+  assert.equal(summary.subagents[0].cost_usd, child.cost_usd);
+  assert.equal(summary.subagents[0].attribution, "observed-child-session");
 });
 
 sqliteTest("degrades gracefully when optional signal tables are missing", async (t) => {
@@ -404,6 +414,24 @@ sqliteTest("session bounds use request end times so the last generation's durati
   // count as working time — not 0.
   assert.equal(row.active_ms, 10000);
   assert.equal(row.duration_ms, 10000);
+});
+
+sqliteTest("request spans normalize epoch seconds alongside millisecond timestamps", async (t) => {
+  const { dbPath } = buildDb(t, (db) => {
+    for (const [id, startedAt] of [["seconds", T0 / 1000], ["milliseconds", T0]]) {
+      insertSession(db, { id, directory: "/repo/timestamps", created: T0 });
+      insertModelUsage(db, { id, sessionId: id, startedAt, input: 500, output: 400, durationMs: 10000 });
+    }
+  });
+  const rows = await scanZcodeSessions(dbPath);
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.equal(row.started_at, iso(T0));
+    assert.equal(row.ended_at, iso(T0 + 10000));
+    assert.equal(row.active_ms, 10000);
+    assert.equal(row.duration_ms, 10000);
+    assert.equal(row.project_key, "timestamps");
+  }
 });
 
 sqliteTest("usage buckets scope day filters instead of billing a whole multi-day session", async (t) => {
@@ -500,6 +528,44 @@ sqliteTest("a failed legacy v1 query also aborts the scan when no native layout 
   });
   assert.deepEqual(readZcodeDbMessages(dbPath), []);
   await assert.rejects(scanZcodeSessions(dbPath));
+});
+
+sqliteTest("failed ZCode rebuilds preserve the complete cache and retry unchanged databases", async (t) => {
+  const { home, dbPath } = buildDb(t, (db) => {
+    insertSession(db, { id: "retry", directory: "/repo/retry", created: T0 });
+    insertModelUsage(db, { id: "retry", sessionId: "retry", input: 500, output: 400 });
+  });
+  const previousZcodeHome = process.env.ZCODE_HOME;
+  const previousWslMode = process.env.TOKENTRACKER_WSL_MODE;
+  process.env.ZCODE_HOME = path.join(home, ".zcode");
+  process.env.TOKENTRACKER_WSL_MODE = "native-only";
+  t.after(() => {
+    if (previousZcodeHome === undefined) delete process.env.ZCODE_HOME;
+    else process.env.ZCODE_HOME = previousZcodeHome;
+    if (previousWslMode === undefined) delete process.env.TOKENTRACKER_WSL_MODE;
+    else process.env.TOKENTRACKER_WSL_MODE = previousWslMode;
+  });
+  const first = await buildSessionAnalytics({ home, force: true });
+  assert.equal(first.length, 1);
+  const sidecarPath = resolveSessionSidecarPath(home);
+  const previousSidecar = fs.readFileSync(sidecarPath, "utf8");
+  const previousMeta = fs.readFileSync(`${sidecarPath}.meta.json`, "utf8");
+  const healthyDb = fs.readFileSync(dbPath);
+  fs.writeFileSync(dbPath, "not a sqlite database");
+
+  // The second failed build sees exactly the same stat signature as the
+  // first. It must retry and keep reporting the failure, not hit an empty cache.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const failed = await buildSessionAnalytics({ home, cacheTtlMs: 0 });
+    assert.equal(failed.skippedFiles, 1);
+    assert.equal(fs.readFileSync(sidecarPath, "utf8"), previousSidecar);
+    assert.equal(fs.readFileSync(`${sidecarPath}.meta.json`, "utf8"), previousMeta);
+  }
+  fs.writeFileSync(dbPath, healthyDb);
+  const recovered = await buildSessionAnalytics({ home, cacheTtlMs: 0 });
+  assert.equal(recovered.skippedFiles, 0);
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].total_tokens, first[0].total_tokens);
 });
 
 const wslTest = DatabaseSync && process.platform === "win32" ? test : test.skip;
