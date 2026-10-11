@@ -55,7 +55,6 @@ import { formatDeviceLabel } from "../lib/device-label.js";
 import { CLOUD_USAGE_SYNCED_EVENT, getCurrentDeviceId } from "../lib/cloud-sync-prefs";
 import { recordCloudPromptIntent } from "../lib/cloud-prompt-policy.js";
 import { ShareModal } from "../ui/share/ShareModal";
-import { CloudUsageExport } from "../components/cloud/CloudUsageExport.jsx";
 import { useShareCardData } from "../ui/share/use-share-card-data";
 import { runSingleFlight } from "../lib/single-flight";
 import {
@@ -69,12 +68,7 @@ const DETAILS_PAGED_PERIODS = new Set(["day", "total", "custom"]);
 
 // Default Overview card order — each column is dragged/persisted independently.
 const LEFT_CARD_ORDER_DEFAULTS = [
-  "islandOnboarding",
-  "linuxPetCard",
-  "macAppBanner",
   "statsPanel",
-  "widgetOnboarding",
-  "linuxTopBarCard",
   "installCopy",
   "activityHeatmap",
   "deviceUsage",
@@ -1385,9 +1379,6 @@ export function DashboardPage({
 
   return (
     <>
-    {accountView && !publicMode ? <div className="mb-3 flex justify-end">
-      <CloudUsageExport from={from} to={to} deviceId={selectedDevice} />
-    </div> : null}
     <DashboardView
       copy={copy}
       onOpenShare={openShareModal}
