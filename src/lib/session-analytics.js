@@ -2046,6 +2046,13 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     }
     if (rows.length > 0) nextFiles[cacheKey] = { stat_key: statKey };
   }
+  if (incompleteZcodeScan) {
+    // Discovery selects one ZCode database. If it fails, retain its last
+    // complete rows even on a forced refresh; skippedFiles still reports that
+    // these rows could not be refreshed. Older cache schemas must be rebuilt.
+    sessions.push(...readSidecar(sidecarPath).filter((row) =>
+      row.source === "zcode" && row.version === SIDECAR_VERSION));
+  }
   sessions.sort((a, b) => String(b.ended_at || "").localeCompare(String(a.ended_at || "")));
   // A failed database scan is an incomplete inventory. Keep the last complete
   // snapshot and signature so an unchanged database is retried next build.

@@ -555,9 +555,12 @@ sqliteTest("failed ZCode rebuilds preserve the complete cache and retry unchange
 
   // The second failed build sees exactly the same stat signature as the
   // first. It must retry and keep reporting the failure, not hit an empty cache.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const failed = await buildSessionAnalytics({ home, cacheTtlMs: 0 });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const failed = await buildSessionAnalytics({ home, cacheTtlMs: 0, force: attempt === 2 });
     assert.equal(failed.skippedFiles, 1);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].session_id, "retry");
+    assert.equal(failed[0].total_tokens, first[0].total_tokens);
     assert.equal(fs.readFileSync(sidecarPath, "utf8"), previousSidecar);
     assert.equal(fs.readFileSync(`${sidecarPath}.meta.json`, "utf8"), previousMeta);
   }
