@@ -47,7 +47,7 @@ export function SettingsRow({ label, hint, control }) {
 export function SectionCard({ title, subtitle, action, children }) {
   return (
     <Card className="rounded-lg">
-      <div className="mb-3 flex items-start justify-between gap-4">
+      <div className={cn("flex justify-between gap-4", subtitle ? "mb-3 items-start" : "mb-2 items-center")}>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium text-oai-gray-500 dark:text-oai-gray-300 uppercase tracking-wide">
             {title}
@@ -67,6 +67,9 @@ export function SectionCard({ title, subtitle, action, children }) {
   );
 }
 
+export const SETTINGS_INPUT_CLASS =
+  "w-full rounded-md border border-oai-gray-300 bg-transparent px-2.5 py-1.5 text-sm text-oai-black outline-none transition-colors focus:border-oai-brand-500 focus:ring-1 focus:ring-inset focus:ring-oai-brand-500 dark:border-oai-gray-700 dark:text-white";
+
 export function SegmentedControl({ options, value, onChange, disabled = false }) {
   return (
     <div className="inline-flex items-center rounded-lg border border-oai-gray-200 bg-oai-gray-50 p-0.5 dark:border-oai-gray-800 dark:bg-oai-gray-900">
@@ -80,7 +83,7 @@ export function SegmentedControl({ options, value, onChange, disabled = false })
             aria-pressed={active}
             disabled={disabled}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 disabled:cursor-not-allowed disabled:opacity-50",
               active
                 ? "bg-white text-oai-black shadow-sm dark:bg-oai-gray-800 dark:text-white"
                 : "text-oai-gray-500 hover:text-oai-black dark:text-oai-gray-400 dark:hover:text-white",

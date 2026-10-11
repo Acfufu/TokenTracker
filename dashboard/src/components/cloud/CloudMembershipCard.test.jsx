@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy, setCopyLocale } from "../../lib/copy";
 import { readCloudAction } from "../../lib/cloud-action-intent.js";
 import { saveCloudPurchase } from "../../lib/cloud-checkout.js";
+import { formatCloudMoney } from "../../lib/cloud-billing";
 import { CloudMembershipCard } from "./CloudMembershipCard.jsx";
 
 const mocks = vi.hoisted(() => ({
@@ -343,7 +344,7 @@ describe("Cloud membership management", () => {
     await openPaymentHistory();
     expect(screen.queryByRole("link", { name: "Continue payment" })).not.toBeInTheDocument();
     const paidStatus = screen.getByText("Paid", { exact: true });
-    const refundStatus = screen.getByText(copy("cloud.history.refunded", { amount: "US$2.49" }));
+    const refundStatus = screen.getByText(copy("cloud.history.refunded", { amount: formatCloudMoney(249, "USD") }));
     expect(paidStatus).toBeVisible();
     expect(refundStatus).toBeVisible();
     for (const status of [paidStatus, refundStatus]) {

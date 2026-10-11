@@ -19,7 +19,7 @@ function StandaloneCloudSection({ active }) {
 
 function CloudSettingsSection({ settings, active }) {
   return (
-    <CloudMembershipCard showTitle={false} heading={copy("settings.section.cloud")} active={active}
+    <CloudMembershipCard showTitle={false} active={active}
       syncControl={settings.showLocalCloudSync ? <CloudSyncRow settings={settings} /> : null} />
   );
 }

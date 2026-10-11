@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Tooltip } from "@base-ui/react/tooltip";
-import { ChevronRight, Cloud, CreditCard, ExternalLink, Info, Monitor, Pause, Play, RefreshCw } from "lucide-react";
+import { ChevronRight, Cloud, CreditCard, ExternalLink, Gift, Info, Monitor, Pause, Play, RefreshCw } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useLoginModal } from "../../contexts/LoginModalContext.jsx";
 import { useCloudAccount } from "../../hooks/use-cloud-billing.js";
@@ -23,6 +23,7 @@ import { CloudUsageExport } from "./CloudUsageExport.jsx";
 import { CloudActionDialog } from "./CloudActionDialog.jsx";
 import { Button } from "../../ui/components/Button.jsx";
 import { Card } from "../../ui/components/Card.jsx";
+import { SectionCard } from "../settings/Controls.jsx";
 import {
   BillingNotice,
   CloudPaymentConflictNotice,
@@ -550,29 +551,31 @@ export function CloudMembershipAccount({ account, auth, loading, error, refresh,
       await refresh();
     });
   const membershipSummary = cloudMembershipSummary(membership, endDate);
+  const gifted = membership?.status === "active" && membership?.access_source === "gift";
   const hasTools = (waffoPortal && !activeSubscription) || membership?.can_read_cloud ||
     (!selfHosted && account?.gift_redemption_available === true);
 
   if (!auth?.signedIn) {
     return (
       <div className="space-y-4">
-      {heading ? <h2 className="shrink-0 !text-2xl font-semibold">{heading}</h2> : null}
-      <Card className="tt-cloud-theme">
-        {!heading && showTitle ? <h2 className="text-base font-semibold">
-          {copy("cloud.membership.title")}
-        </h2> : null}
-        <p className={`${!heading && showTitle ? "mt-2 " : ""}text-sm leading-6 text-oai-gray-500 dark:text-oai-gray-400`}>
-          {copy("cloud.membership.signed_out")}
-        </p>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button onClick={() => openLoginModal({ subtitle: copy("cloud.membership.signed_out") })}>
-            {copy("cloud.action.sign_in_continue")}
-          </Button>
-        </div>
-      </Card>
+        <SectionCard title={heading || (showTitle ? copy("cloud.membership.title") : copy("settings.section.cloud"))}>
+          <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <p className="text-sm text-oai-gray-500 dark:text-oai-gray-400">
+              {copy("cloud.membership.signed_out")}
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => openLoginModal({ subtitle: copy("cloud.membership.signed_out") })}
+            >
+              {copy("cloud.action.sign_in_continue")}
+            </Button>
+          </div>
+        </SectionCard>
       </div>
     );
   }
+  const cardTitle = heading || (showTitle ? copy("cloud.membership.title") : copy("settings.section.cloud"));
   return (
     <div className="space-y-4">
     <section aria-label={copy("cloud.membership.title")} className="tt-cloud-theme space-y-3">
@@ -580,61 +583,113 @@ export function CloudMembershipAccount({ account, auth, loading, error, refresh,
         <BillingNotice>{copy("cloud.catalog.sandbox")}</BillingNotice>
       ) : null}
       {paymentConflict ? <CloudPaymentConflictNotice showBillingLink={false} /> : null}
-      <div>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-2">
-            {heading ? <h2 className="shrink-0 !text-2xl font-semibold">{heading}</h2> : null}
-            {!heading && showTitle ? <h2 className="inline-flex items-center gap-2 text-base font-semibold">
-              <Cloud size={18} className="text-oai-gray-500 dark:text-oai-gray-400" aria-hidden />
-              {copy("cloud.membership.title")}
-            </h2> : null}
-            {membershipSummary ? <span className="text-sm text-oai-gray-500 dark:text-oai-gray-400">
-              {membershipSummary}
-            </span> : null}
-          </div>
+      <SectionCard
+        title={cardTitle}
+        action={
           <Button
             onClick={refresh}
             variant="ghost"
             size="sm"
-            className="!size-10 shrink-0 !p-0"
+            className="!h-8 !w-8 shrink-0 !p-0 text-oai-gray-500 hover:text-oai-black dark:text-oai-gray-400 dark:hover:text-white"
             disabled={loading}
             aria-label={copy("cloud.action.refresh_membership")}
           >
-            <RefreshCw size={15} className={loading ? "motion-safe:animate-spin" : undefined} aria-hidden />
+            <RefreshCw size={14} className={loading ? "motion-safe:animate-spin" : undefined} aria-hidden />
           </Button>
+        }
+      >
+        <div className="pt-0.5 pb-2.5">
+          {gifted ? (
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-oai-gray-200 bg-oai-gray-50 text-oai-gray-700 dark:border-oai-gray-800 dark:bg-oai-gray-800/60 dark:text-oai-gray-300">
+                <Gift className="h-[30px] w-[30px]" aria-hidden />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-oai-black dark:text-white">
+                    {copy("cloud.gift.membership_label")}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-oai-gray-200 bg-oai-gray-50 px-2 py-0.5 text-[11px] font-medium text-oai-gray-700 dark:border-oai-gray-800 dark:bg-oai-gray-800/60 dark:text-oai-gray-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
+                    {copy("cloud.gift.state_active")}
+                  </span>
+                </div>
+                {membershipSummary && membershipSummary !== copy("cloud.gift.membership_label") ? (
+                  <p className="mt-1 text-xs text-oai-gray-500 dark:text-oai-gray-400">
+                    {membershipSummary}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-oai-gray-200 bg-oai-gray-50 text-oai-gray-700 dark:border-oai-gray-800 dark:bg-oai-gray-800/60 dark:text-oai-gray-300">
+                <Cloud className="h-[30px] w-[30px]" aria-hidden />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-oai-black dark:text-white">
+                    {cloudMembershipLabel(membership?.status)}
+                  </span>
+                  {membership?.status === "active" ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-oai-gray-200 bg-oai-gray-50 px-2 py-0.5 text-[11px] font-medium text-oai-gray-700 dark:border-oai-gray-800 dark:bg-oai-gray-800/60 dark:text-oai-gray-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
+                      {copy("cloud.gift.state_active")}
+                    </span>
+                  ) : null}
+                </div>
+                {membershipSummary && membershipSummary !== cloudMembershipLabel(membership?.status) ? (
+                  <p className="mt-1 text-xs text-oai-gray-500 dark:text-oai-gray-400">
+                    {membershipSummary}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
-        {membership?.status === "expired" ? <p className="mt-3 max-w-2xl text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">
-          {membership.can_read_cloud ? copy("cloud.membership.read_only", { date: formatCloudDate(membership.read_only_until) }) : copy("cloud.membership.expired_detail")}
-        </p> : null}
-        {membership ? <CloudDeadlinePrompt userId={auth.user?.id} membership={membership} subscriptions={account?.subscriptions} className="mt-3" /> : null}
+        {membership?.status === "expired" ? (
+          <p className="py-2.5 text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">
+            {membership.can_read_cloud ? copy("cloud.membership.read_only", { date: formatCloudDate(membership.read_only_until) }) : copy("cloud.membership.expired_detail")}
+          </p>
+        ) : null}
+        {membership ? <CloudDeadlinePrompt userId={auth.user?.id} membership={membership} subscriptions={account?.subscriptions} className="py-2.5" /> : null}
         {!membership && loading ? (
-          <p role="status" className="mt-3 text-sm text-oai-gray-500 dark:text-oai-gray-400">
+          <p role="status" className="py-2.5 text-sm text-oai-gray-500 dark:text-oai-gray-400">
             {copy("cloud.catalog.loading")}
           </p>
         ) : null}
-        {activeSubscription ? <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          {activeSubscription ? <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            <p className="text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">
-            {activeSubscription.status === "paused"
-              ? copy("cloud.membership.renewal_paused")
-              : activeSubscription.status === "past_due"
-                ? copy("cloud.membership.payment_due")
-              : hasRenewal
-                ? knownBillingDate
-                  ? copy("cloud.membership.renews", { date: formatCloudDate(nextBillingDate) })
-                  : copy("cloud.membership.renewal_unknown")
-                : copy("cloud.membership.renewal_off")}
-            </p>
-            {canCancelRenewal ? <Button
-              aria-expanded={Boolean(canceling)} aria-controls={canceling ? "cloud-cancel-confirm" : undefined}
-              onClick={() => setCanceling((current) => current === activeSubscription.provider_subscription_id ? null : activeSubscription.provider_subscription_id)}
-              variant="ghost" size="sm" className="!h-10 !px-2" disabled={busy}>
-              {copy("cloud.action.cancel_renewal")}
-            </Button> : null}
-          </div> : null}
-        </div> : null}
+        {activeSubscription ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <p className="text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">
+                {activeSubscription.status === "paused"
+                  ? copy("cloud.membership.renewal_paused")
+                  : activeSubscription.status === "past_due"
+                    ? copy("cloud.membership.payment_due")
+                  : hasRenewal
+                    ? knownBillingDate
+                      ? copy("cloud.membership.renews", { date: formatCloudDate(nextBillingDate) })
+                      : copy("cloud.membership.renewal_unknown")
+                    : copy("cloud.membership.renewal_off")}
+              </p>
+              {canCancelRenewal ? (
+                <Button
+                  aria-expanded={Boolean(canceling)}
+                  aria-controls={canceling ? "cloud-cancel-confirm" : undefined}
+                  onClick={() => setCanceling((current) => current === activeSubscription.provider_subscription_id ? null : activeSubscription.provider_subscription_id)}
+                  variant="ghost"
+                  size="sm"
+                  className="!h-8 !px-2 text-xs"
+                  disabled={busy}
+                >
+                  {copy("cloud.action.cancel_renewal")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         {canceling ? (
-          <div id="cloud-cancel-confirm" className="mt-4 rounded-lg border border-oai-gray-200 p-4 dark:border-oai-gray-800">
+          <div id="cloud-cancel-confirm" className="my-3 rounded-lg border border-oai-gray-200 p-4 dark:border-oai-gray-800">
             <p className="text-sm leading-6">
               {endDate
                 ? copy("cloud.cancel.detail", { date: formatCloudDate(endDate) })
@@ -644,27 +699,23 @@ export function CloudMembershipAccount({ account, auth, loading, error, refresh,
               <Button onClick={cancel} variant="secondary" disabled={busy}>
                 {copy("cloud.cancel.confirm")}
               </Button>
-              <Button
-                onClick={() => setCanceling(null)}
-                variant="ghost"
-                disabled={busy}
-              >
+              <Button onClick={() => setCanceling(null)} variant="ghost" disabled={busy}>
                 {copy("cloud.action.keep")}
               </Button>
             </div>
           </div>
         ) : null}
         {error ? (
-          <div className="mt-4">
+          <div className="py-2.5">
             <BillingNotice error={error} onRetry={refresh} context="account" />
           </div>
         ) : null}
         {actionError && activeDialog !== "billing" ? (
-          <div className="mt-4">
+          <div className="py-2.5">
             <BillingNotice error={actionError} context="account" />
           </div>
         ) : null}
-      </div>
+      </SectionCard>
     </section>
       {membership ? <Card className="tt-cloud-theme !rounded-lg" bodyClassName="!py-3">
         <CloudMachineList auth={auth} machineLimit={membership.machine_limit}

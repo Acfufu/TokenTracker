@@ -21,6 +21,7 @@ import { useProxySettings } from "../hooks/use-proxy-settings.js";
 import { cn } from "../lib/cn";
 import { copy } from "../lib/copy";
 import { isNativeWindowsApp } from "../lib/native-bridge.js";
+import { Button } from "../ui/components/Button.jsx";
 
 const SETTINGS_SECTION_IDS = {
   APPEARANCE: "appearance",
@@ -177,15 +178,16 @@ export function SettingsPage() {
               hint={copy("settings.limits.showSubscriptionsHint")}
               control={
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => navigate("/limits?openSubscriptions=1")}
                     aria-label={copy("limits.page.openSubscriptions")}
                     title={copy("limits.page.openSubscriptions")}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-oai-gray-200 dark:border-oai-gray-700 bg-white dark:bg-oai-gray-900 text-oai-gray-500 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+                    className="!h-7 !w-7 !p-0 text-oai-gray-500 hover:text-oai-black dark:text-oai-gray-400 dark:hover:text-white"
                   >
                     <Settings size={14} aria-hidden />
-                  </button>
+                  </Button>
                   <ToggleSwitch
                     checked={limitsPrefs.showSubscriptions !== false}
                     onChange={() => limitsPrefs.setShowSubscriptions(!limitsPrefs.showSubscriptions)}
@@ -229,15 +231,11 @@ export function SettingsPage() {
       ...group,
       sections: sections.filter((section) => section.group === group.id),
     }))
-    .filter((group) => group.sections.length > 0);
+    .filter((group) => {
+      return group.sections.length > 0;
+    });
 
-  let activeSectionMeta = sections[0];
-  for (const section of sections) {
-    if (section.id === activeSection) {
-      activeSectionMeta = section;
-      break;
-    }
-  }
+
 
   return (
     <div className={cn("flex flex-1 flex-col font-oai text-oai-black antialiased dark:text-oai-white", activeSection === SETTINGS_SECTION_IDS.CLOUD && "tt-cloud-settings")}>
@@ -299,14 +297,6 @@ export function SettingsPage() {
             </aside>
 
             <div className="min-w-0">
-              {activeSection !== SETTINGS_SECTION_IDS.CLOUD ? <div className="mb-4 border-b border-oai-gray-200 pb-4 dark:border-oai-gray-800">
-                <h2 className="text-xl font-semibold tracking-tight text-oai-black dark:text-white">
-                  {activeSectionMeta.label}
-                </h2>
-                <p className="mt-1 text-sm leading-5 text-oai-gray-500 dark:text-oai-gray-400">
-                  {activeSectionMeta.description}
-                </p>
-              </div> : null}
               {sections.map(({ id, label, content }) => (
                 <section
                   key={id}
