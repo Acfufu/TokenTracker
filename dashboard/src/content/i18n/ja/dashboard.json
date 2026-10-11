@@ -639,5 +639,9 @@
   "cloud.plan.trial_setup_hint": "試用を開始したら、パソコンで Cloud 同期を有効にしてください。",
   "cloud.trial.disclosure": "Cloud を {{days}} 日間無料で試せます。{{date}} まで。自動課金はありません。",
   "cloud.trial.used_hint": "無料試用は利用済みです。Cloud プランを選んで利用を続けましょう。",
-  "cloud.gift.done": "完了"
+  "cloud.gift.done": "完了",
+  "cloud.free.device_scope": "現在のデバイスの使用量のみを集計",
+  "cloud.plan.includes_local": "無料版のすべてのローカル機能を含む",
+  "cloud.plan.device_sync": "デバイス台数の制限なし、使用量をまとめて同期",
+  "cloud.plan.device_fair_use": "通常の個人利用ではデバイス台数の制限や台数ごとの追加料金はありません。大量または異常なデバイス接続には同期保護が適用される場合があります。"
 }

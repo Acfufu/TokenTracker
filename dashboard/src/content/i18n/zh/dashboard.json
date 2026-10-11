@@ -1029,5 +1029,9 @@
   "sessions.storage.allocated": "分配空间",
   "sessions.storage.logical": "逻辑文件大小",
   "sessions.storage.size": "{{value}} MiB",
-  "cloud.gift.done": "完成"
+  "cloud.gift.done": "完成",
+  "cloud.free.device_scope": "仅统计当前设备的用量",
+  "cloud.plan.includes_local": "包含全部免费本地功能",
+  "cloud.plan.device_sync": "不限设备数量，跨设备汇总同步",
+  "cloud.plan.device_fair_use": "日常个人使用不限设备数量，不按设备收费；大量或异常设备接入可能触发同步保护。"
 }

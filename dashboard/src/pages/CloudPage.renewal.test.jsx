@@ -65,6 +65,16 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("Cloud paid-term renewal", () => {
+  it("puts device scope first in both comparison columns and keeps all local features in Cloud", () => {
+    render(<Page />);
+    const localScope = screen.getByText(copy("cloud.free.device_scope"));
+    const cloudScope = screen.getByText(copy("cloud.plan.device_sync"));
+    expect(localScope.closest("ul").firstElementChild).toContainElement(localScope);
+    expect(cloudScope.closest("ul").firstElementChild).toContainElement(cloudScope);
+    expect(cloudScope.closest("ul").children[1]).toHaveTextContent(copy("cloud.plan.includes_local"));
+    expect(screen.queryByText(copy("cloud.free.installations"))).not.toBeInTheDocument();
+  });
+
   it("extends a current paid term with fixed annual or monthly pricing", async () => {
     render(<Page />);
     expect(screen.getByText(formatCloudMoney(3999, "USD"))).toBeInTheDocument();
@@ -122,7 +132,7 @@ describe("Cloud paid-term renewal", () => {
     state.account.membership = { status: "free", trial_available: true };
     render(<Page />);
     expect(screen.queryByRole("switch", { name: copy("cloud.billing_mode.recurring") })).not.toBeInTheDocument();
-    expect(screen.getByText(copy("cloud.plan.trial_setup_hint"))).toBeInTheDocument();
+    expect(screen.queryByText(copy("cloud.plan.trial_setup_hint"))).not.toBeInTheDocument();
     await click(screen.getByRole("button", { name: copy("cloud.action.try", { days: 7 }) }));
     expect(screen.getByTestId("location")).toHaveTextContent("/billing/checkout?intent=trial&sku=cloud_usd_yearly");
   });

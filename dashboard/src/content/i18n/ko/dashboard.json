@@ -639,5 +639,9 @@
   "cloud.plan.trial_setup_hint": "체험을 시작한 뒤 컴퓨터에서 Cloud 동기화를 켜세요.",
   "cloud.trial.disclosure": "{{date}}까지 {{days}}일 동안 Cloud를 무료로 체험하세요. 자동 결제는 없습니다.",
   "cloud.trial.used_hint": "무료 체험을 이미 사용했어요. Cloud 요금제를 선택하고 계속 이용하세요.",
-  "cloud.gift.done": "완료"
+  "cloud.gift.done": "완료",
+  "cloud.free.device_scope": "현재 기기의 사용량만 집계",
+  "cloud.plan.includes_local": "무료 로컬 기능 모두 포함",
+  "cloud.plan.device_sync": "기기 수 제한 없이 사용량 통합·동기화",
+  "cloud.plan.device_fair_use": "일상적인 개인 사용은 기기 수 제한이나 기기별 추가 요금이 없습니다. 대량 또는 비정상적인 기기 연결에는 동기화 보호가 적용될 수 있습니다."
 }

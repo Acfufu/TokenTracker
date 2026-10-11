@@ -162,12 +162,11 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
               <p className="mt-3 text-sm leading-6 text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.free.forever")}</p>
             </div>
             <PlanFeatures items={[
+              copy("cloud.free.device_scope"),
               copy("cloud.free.tracking"), copy("cloud.free.limits"), copy("cloud.free.desktop"),
               copy("cloud.free.exports"), copy("cloud.plan.local_community"),
             ]} />
-            <div className="flex items-center border-t border-oai-gray-200 py-4 dark:border-oai-gray-800">
-              <p className="text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.free.installations")}</p>
-            </div>
+            <div aria-hidden className="border-t border-oai-gray-200 pt-4 dark:border-oai-gray-800" />
             <Button as={Link} to={auth?.signedIn ? "/dashboard" : "/landing#download"} variant="secondary" className="w-full no-underline">{copy(auth?.signedIn ? "cloud.action.open_dashboard" : "cloud.free.cta")}</Button>
             <div aria-hidden />
           </Card>
@@ -197,17 +196,14 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
               </p>
             </div>
             <PlanFeatures items={[
+              copy("cloud.plan.device_sync"),
+              copy("cloud.plan.includes_local"),
               copy("cloud.plan.anywhere"),
               copy("cloud.plan.sync", { minutes: catalog?.limits?.sync_minutes || 15 }),
               copy("cloud.plan.retained_history", { days: catalog?.limits?.hourly_history_days || 90, months: catalog?.limits?.daily_history_months || 24 }),
               copy("cloud.plan.identity"),
             ]} />
-            <div className="border-t border-oai-gray-200 py-4 dark:border-oai-gray-800">
-              {offersTrial ? (
-                <p className="flex min-h-11 items-center text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">
-                  {copy("cloud.plan.trial_setup_hint")}
-                </p>
-              ) : null}
+            <div className={`border-t border-oai-gray-200 dark:border-oai-gray-800 ${offersTrial ? "pt-4" : "py-4"}`}>
               {!offersTrial && extendsCurrentTerm ? (
                 <p className="flex min-h-11 items-center text-sm font-medium">
                   {copy("cloud.billing_mode.fixed")}<span className="ml-2 text-xs font-normal text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.plan.renewal_off")}</span>
@@ -262,7 +258,7 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
               <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-sm font-medium [&::-webkit-details-marker]:hidden">
                 {copy("cloud.plan.details_title")}<ChevronDown size={16} className="shrink-0 text-oai-gray-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" aria-hidden />
               </summary>
-              <div className="max-w-2xl pb-5"><CloudFeatures limits={catalog?.limits} /><p className="mt-4 text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.feature.pro_identity")}</p></div>
+              <div className="pb-5"><CloudFeatures limits={catalog?.limits} /><p className="mt-4 text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.plan.device_fair_use")}</p><p className="mt-3 text-xs leading-5 text-oai-gray-500 dark:text-oai-gray-400">{copy("cloud.feature.pro_identity")}</p></div>
             </details>
             {[
               [copy("cloud.faq.local_title"), copy("cloud.faq.local_body")],
@@ -274,7 +270,7 @@ export function CloudPlanView({ catalogState, accountState, initialSelection, se
               <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-sm font-medium [&::-webkit-details-marker]:hidden">
                 {title}<ChevronDown size={16} className="shrink-0 text-oai-gray-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" aria-hidden />
               </summary>
-              <p className="max-w-2xl pb-5 text-sm leading-7 text-oai-gray-500 dark:text-oai-gray-400">{body}</p>
+              <p className="pb-5 text-sm leading-7 text-oai-gray-500 dark:text-oai-gray-400">{body}</p>
             </details>)}
           </div>
         </section>

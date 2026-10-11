@@ -1088,5 +1088,9 @@
   "sessions.storage.allocated": "配置空間",
   "sessions.storage.logical": "邏輯檔案大小",
   "sessions.storage.size": "{{value}} MiB",
-  "cloud.gift.done": "完成"
+  "cloud.gift.done": "完成",
+  "cloud.free.device_scope": "僅統計目前裝置的用量",
+  "cloud.plan.includes_local": "包含全部免費本地功能",
+  "cloud.plan.device_sync": "不限裝置數量，跨裝置彙整同步",
+  "cloud.plan.device_fair_use": "日常個人使用不限裝置數量，不按裝置收費；大量或異常裝置接入可能觸發同步保護。"
 }

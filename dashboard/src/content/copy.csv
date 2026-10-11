@@ -2083,3 +2083,7 @@ sessions.storage.tooltip,dashboard,SessionsPage,SessionRow,storage,"Session file
 sessions.storage.allocated,dashboard,SessionsPage,SessionRow,storage,"allocated bytes",,active
 sessions.storage.logical,dashboard,SessionsPage,SessionRow,storage,"logical file size",,active
 sessions.storage.size,dashboard,SessionsPage,SessionRow,storage_size,"{{value}} MiB",,active
+cloud.free.device_scope,cloud,CloudPage,CloudPage,text,"Usage statistics for this device only",,active
+cloud.plan.includes_local,cloud,CloudPage,CloudPage,text,"All free local features included",,active
+cloud.plan.device_sync,cloud,CloudPage,CloudPage,text,"Unlimited devices · cross-device usage sync",,active
+cloud.plan.device_fair_use,cloud,CloudPage,CloudPage,text,"Unlimited devices for everyday personal use, with no per-device charges. Bulk or abnormal device connections may trigger sync protection.",,active

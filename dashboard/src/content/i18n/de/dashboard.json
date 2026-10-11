@@ -650,5 +650,9 @@
   "cloud.plan.trial_setup_hint": "Starte die Testphase und richte dann die Synchronisierung auf deinen Computern ein.",
   "cloud.trial.disclosure": "Cloud {{days}} Tage kostenlos testen, bis {{date}}. Keine automatische Abbuchung.",
   "cloud.trial.used_hint": "Deine kostenlose Testphase wurde bereits genutzt. Wähle einen Cloud-Tarif, um fortzufahren.",
-  "cloud.gift.done": "Fertig"
+  "cloud.gift.done": "Fertig",
+  "cloud.free.device_scope": "Nutzungsstatistiken nur für dieses Gerät",
+  "cloud.plan.includes_local": "Alle kostenlosen lokalen Funktionen enthalten",
+  "cloud.plan.device_sync": "Unbegrenzte Geräte · geräteübergreifende Synchronisierung",
+  "cloud.plan.device_fair_use": "Unbegrenzte Geräte für die alltägliche persönliche Nutzung, ohne Gebühren pro Gerät. Viele oder ungewöhnliche Geräteverbindungen können den Synchronisierungsschutz auslösen."
 }
