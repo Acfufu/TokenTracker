@@ -55,8 +55,8 @@ jobs:
       - name: Test skill management interactions
         run: npm --prefix dashboard test -- src/pages/SkillsPage.test.jsx
 
-      - name: Test dashboard limits preferences
-        run: npm --prefix dashboard test -- src/hooks/use-limits-display-prefs.test.js
+      - name: Test dashboard preferences and card lifecycle
+        run: npm --prefix dashboard test -- src/hooks/use-limits-display-prefs.test.js src/ui/dashboard/views/DashboardView.test.jsx
 
       # The bot character's renderer and its cross-host contracts live on the dashboard
       # side, so npm test alone does not cover them; test/bot-parity.test.js only pins
