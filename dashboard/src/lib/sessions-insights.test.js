@@ -40,6 +40,7 @@ describe("session statistics", () => {
 
   it("parses supported deep link filters and rejects invalid calendar dates", () => {
     expect(parseSessionFilters("?source=codex&model=gpt-5.6-sol&from=2026-07-01&to=2026-07-31")).toEqual({ source: "codex", model: "gpt-5.6-sol", from: "2026-07-01", to: "2026-07-31" });
+    expect(parseSessionFilters("?source=zcode")).toEqual({ source: "zcode", model: "all", from: "", to: "" });
     expect(parseSessionFilters("?source=other&from=2026-02-30&to=wrong")).toEqual({ source: "all", model: "all", from: "", to: "" });
   });
 

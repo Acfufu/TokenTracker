@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { scanClaudeSession, scanCodexSession, listSessionsForBrowser, summarizeSessions, buildSessionAnalytics } = require("../src/lib/session-analytics");
 const { getModelPricingInfo, getModelPricing, computeRowCost } = require("../src/lib/pricing");
-const { mergePerformance, createCodexPerformanceCollector } = require("../src/lib/session-performance");
+const { mergePerformance, createCodexPerformanceCollector, createZcodePerformanceCollector } = require("../src/lib/session-performance");
 
 const ts = (seconds) => new Date(Date.UTC(2026, 9, 8) + seconds * 1000).toISOString();
 const usage = (output, input = 1000) => ({ input_tokens: input, cached_input_tokens: 0, output_tokens: output, total_tokens: input + output });
@@ -285,4 +285,24 @@ test("nonzero unknown Claude usage remains in model totals and partial cost", as
   assert.equal(unknownUsage.total_tokens, 400);
   assert.equal(row.total_tokens, 900);
   assert.equal(row.cost_is_partial, true);
+});
+
+test("ZCode collector converts per-request durations and first-token samples", () => {
+  const collector = createZcodePerformanceCollector();
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 900, durationMs: 30000, timeToFirstTokenMs: 1200 });
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 300, durationMs: 10000, timeToFirstTokenMs: 800 });
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 50, durationMs: 5000 }); // below MIN_OUTPUT
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 500, durationMs: 500 }); // below MIN_DURATION_MS
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 500, durationMs: 2 * 60 * 60 * 1000 }); // above MAX_DURATION_MS
+  collector.consumeUsage({ model: "GLM-5.3", outputTokens: 100, durationMs: 4000, timeToFirstTokenMs: -1 }); // negative first token ignored
+  const { performance, byModel } = collector.finish();
+  assert.equal(performance.estimated_output_tokens, 1200);
+  assert.equal(performance.estimated_duration_ms, 40000);
+  assert.equal(performance.estimated_request_count, 2);
+  assert.ok(Math.abs(performance.estimated_tokens_per_second - 30) < 1e-9);
+  assert.equal(performance.first_response_total_ms, 2000);
+  assert.equal(performance.first_response_sample_count, 2);
+  assert.equal(performance.first_response_ms, 1000);
+  assert.equal(byModel.get("GLM-5.3").estimated_request_count, 2);
+  assert.equal(byModel.get("GLM-5.3").estimated_tokens_per_second, 30);
 });

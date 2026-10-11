@@ -124,6 +124,44 @@ const response = {
   ],
 };
 
+const zcodeRow = {
+  session_hash: "zcode-row",
+  session_id: "sess_zcode-0001",
+  title: "Ship zcode support",
+  source: "zcode",
+  project_key: "tokentracker",
+  project_ref: "/work/tokentracker",
+  model: "GLM-5.3",
+  started_at: "2026-07-21T08:00:00Z",
+  ended_at: "2026-07-21T08:12:00Z",
+  duration_ms: 720_000,
+  turns: 4,
+  edit_turns: 2,
+  retry_turns: 0,
+  subagent_calls: 0,
+  input_tokens: 40_000,
+  cached_input_tokens: 360_000,
+  cache_creation_input_tokens: 0,
+  output_tokens: 9_000,
+  reasoning_output_tokens: 0,
+  total_tokens: 409_000,
+  cost_usd: 0.2,
+  cost_source: "model_pricing",
+  usage_precision: "reported",
+  productive: true,
+  first_pass: false,
+  resume_command: null,
+  performance: {
+    estimated_output_tokens: 9_000,
+    estimated_duration_ms: 90_000,
+    estimated_request_count: 10,
+    estimated_tokens_per_second: 100,
+    first_response_total_ms: 15_000,
+    first_response_sample_count: 10,
+    first_response_ms: 1_500,
+  },
+};
+
 const makeThreadSession = (overrides) => ({
   ...response.sessions[1],
   session_hash: "thread-row",
@@ -173,6 +211,12 @@ describe("SessionsPage", () => {
   });
 
   it("loads local sessions and filters them by source and search", async () => {
+    getSessions.mockResolvedValue({
+      ...response,
+      session_count: 4,
+      returned_count: 4,
+      sessions: [...response.sessions, zcodeRow],
+    });
     render(<SessionsPage />);
 
     expect(await screen.findByText("Fix authentication flow")).toBeInTheDocument();
@@ -202,6 +246,10 @@ describe("SessionsPage", () => {
     await chooseSelect("Filter by session source", "Grok");
     expect(screen.queryByText("Review release")).not.toBeInTheDocument();
     expect(screen.getByText("Debug local proxy")).toBeInTheDocument();
+
+    await chooseSelect("Filter by session source", "ZCode");
+    expect(screen.getByText("Ship zcode support")).toBeInTheDocument();
+    expect(screen.queryByText("Debug local proxy")).not.toBeInTheDocument();
 
     await chooseSelect("Filter by session source", "All tools");
     fireEvent.change(screen.getByRole("searchbox", { name: "Search sessions" }), {

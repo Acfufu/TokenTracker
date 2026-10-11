@@ -28,10 +28,12 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
-const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage } = require("./rollout");
+const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, normalizeOpencodeModelFields } = require("./rollout");
 const { parseCodexRolloutFile } = require("./codex-rollout-parser");
 const { computeRowCost, getModelPricingInfo } = require("./pricing");
-const { normalizePerformance, mergePerformance, createClaudePerformanceCollector, createCodexPerformanceCollector } = require("./session-performance");
+const { normalizePerformance, mergePerformance, createClaudePerformanceCollector, createCodexPerformanceCollector, createZcodePerformanceCollector } = require("./session-performance");
+const { readSqliteJsonRows } = require("./sqlite-reader");
+const { resolveZcodeNativeDbPath } = require("./install-resolver");
 const { USD_TICKS_PER_USD, normalizeGrokUsage } = require("./grok-usage");
 const wsl = require("./wsl-probe");
 const {
@@ -70,7 +72,10 @@ const {
 // long-context subset) and folds delivery signals into the token parser's
 // single pass instead of parsing every Codex file twice.
 // v14 adds request-level estimated performance and Claude model usage.
-const SIDECAR_VERSION = 16;
+// v15/v16 tighten Codex delivery-signal parsing (uncommented bump).
+// v17 adds ZCode sessions from ~/.zcode/cli/db/db.sqlite — one SQLite db
+// scanning to many per-session rows — so every cached row is rebuilt.
+const SIDECAR_VERSION = 17;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1162,6 +1167,372 @@ async function scanGrokSession(filePath) {
   });
 }
 
+// ZCode (Z.ai's CLI, an OpenCode fork) keeps everything in one SQLite DB at
+// ~/.zcode/cli/db/db.sqlite: a `session` table (id/parent_id/directory/title),
+// a `model_usage` table (per-request counters) and OpenCode's legacy `message`
+// table (assistant messages with inclusive token snapshots). Billable tokens
+// come from readZcodeDbMessages() — the exact same reader, inclusive→disjoint
+// normalization and sub-agent provider blocklist the usage sync uses — so the
+// session browser and the usage card can never drift apart. The per-request
+// signal columns live only in model_usage, so they are read separately and
+// feed performance/counter estimates only, never token totals.
+function zcodeTableColumns(dbPath, table) {
+  // throwOnReadFailure: a missing table answers pragma_table_info with an
+  // empty row set (no error), so the only way to land in the reader's failure
+  // path is a genuinely unreadable db — which must propagate, never read as
+  // "no table" (see the throw in scanZcodeSessions below).
+  const rows = readSqliteJsonRows(dbPath, `SELECT name FROM pragma_table_info('${table}')`, {
+    label: "ZCode",
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+    throwOnReadFailure: true,
+  });
+  return new Set((Array.isArray(rows) ? rows : []).map((row) => String(row?.name || "")));
+}
+
+// Messages from readZcodeDbMessages already carry disjoint opencode-shaped
+// tokens ({ input, output, reasoning, cache.read, cache.write }); map them
+// onto the session pipeline's column names. tokenTotals() recomputes the sum.
+function zcodeMessageTotals(data) {
+  const tokens = data?.tokens || {};
+  const totals = tokenTotals({
+    input_tokens: tokens.input,
+    cached_input_tokens: tokens.cache?.read,
+    cache_creation_input_tokens: tokens.cache?.write,
+    output_tokens: tokens.output,
+    reasoning_output_tokens: tokens.reasoning,
+  });
+  // The usage queue's total is input + output + cache_creation + cache_read +
+  // reasoning_output (rollout.js addTotals); tokenTotals' generic total omits
+  // reasoning. ZCode splits reasoning out of output, so fold it back in here or
+  // the session browser undercounts every thinking request against the card.
+  totals.total_tokens += totals.reasoning_output_tokens;
+  return totals;
+}
+
+const ZCODE_SIGNAL_REQUIRED_COLUMNS = [
+  "session_id", "model_id", "provider_id", "status", "started_at", "id",
+  "output_tokens", "duration_ms", "time_to_first_token_ms", "query_source",
+];
+
+// One db yields many session rows, so unlike the per-file scanners this scan
+// returns an array (the entries loop in buildSessionAnalyticsInternal handles
+// both shapes). Errors on the db as a whole propagate: the caller counts the
+// file as skipped instead of caching an empty inventory as "no sessions".
+//
+// WSL dbs arrive as UNC paths (\\wsl$\…), and SQLite over the Plan 9 bridge
+// cannot take the locks even a read needs ("database is locked"). The usage
+// readers snapshot such paths query-by-query; the scan runs several queries
+// plus readZcodeDbMessages against one db, so snapshot once here and run the
+// whole scan (metadata, signals, turns, tools, messages) against the local
+// copy — otherwise the metadata query succeeds while the message read fails
+// on the same database.
+async function scanZcodeSessions(dbPath) {
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (wsl.isUncPath(dbPath)) {
+    try {
+      snapshot = wsl.snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_error) {
+      // Fall through to the direct read: some UNC servers do honor SQLite's
+      // read-only locking, and the queries themselves decide otherwise.
+    }
+  }
+  try {
+    return await scanZcodeSessionsFromDb(effectiveDbPath, dbPath);
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
+}
+
+async function scanZcodeSessionsFromDb(dbPath, displayPath) {
+  const sessionColumns = zcodeTableColumns(dbPath, "session");
+  if (!sessionColumns.has("id")) return [];
+  const optionalColumns = ["parent_id", "directory", "title", "time_created", "time_updated"];
+  const selectColumns = ["id", ...optionalColumns.filter((name) => sessionColumns.has(name))];
+  const orderBy = sessionColumns.has("time_created") ? " ORDER BY time_created ASC, id ASC" : " ORDER BY id ASC";
+  const sessionRows = readSqliteJsonRows(
+    dbPath,
+    `SELECT ${selectColumns.join(", ")} FROM session${orderBy}`,
+    { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
+  );
+
+  const messagesBySession = new Map();
+  // propagateReadFailure: a failed native-usage query must abort the scan (the
+  // caller counts the db as skipped) rather than silently degrade to the
+  // legacy tables and cache a zero-token inventory for those sessions.
+  for (const message of readZcodeDbMessages(dbPath, {}, { propagateReadFailure: true })) {
+    const sessionId = String(message?.sessionID || "").trim();
+    if (!sessionId) continue;
+    let group = messagesBySession.get(sessionId);
+    if (!group) {
+      group = [];
+      messagesBySession.set(sessionId, group);
+    }
+    group.push(message);
+  }
+
+  // Request-level signals (never token totals). Only completed requests feed
+  // duration-based estimates; error rows count toward error_count alone. The
+  // provider filter mirrors isZcodeNativeMessage's blocklist (see rollout.js):
+  // rows ZCode orchestrated through claude/codex/gemini sub-agents already
+  // appear as their own provider's sessions and must not skew signals either.
+  const signalsBySession = new Map();
+  const modelUsageColumns = zcodeTableColumns(dbPath, "model_usage");
+  if (ZCODE_SIGNAL_REQUIRED_COLUMNS.every((name) => modelUsageColumns.has(name))) {
+    const requestRows = readSqliteJsonRows(
+      dbPath,
+      `SELECT session_id, model_id, status, started_at, output_tokens, duration_ms, time_to_first_token_ms, query_source
+       FROM model_usage
+       WHERE status IN ('completed', 'error')
+         AND trim(provider_id) != ''
+         AND provider_id NOT LIKE '%anthropic%'
+         AND provider_id NOT LIKE '%openai%'
+         AND provider_id NOT LIKE '%google%'
+       ORDER BY started_at ASC, id ASC`,
+      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
+    );
+    for (const row of Array.isArray(requestRows) ? requestRows : []) {
+      const sessionId = String(row?.session_id || "").trim();
+      if (!sessionId) continue;
+      let signals = signalsBySession.get(sessionId);
+      if (!signals) {
+        signals = {
+          collector: createZcodePerformanceCollector(),
+          apiDurationMs: 0,
+          compactionCount: 0,
+          errorCount: 0,
+          // Request wall-clock extremes from model_usage. Messages only carry
+          // startedAt (the reader maps it to timeUpdated), so without these the
+          // last generation's duration never reaches ended_at and a session's
+          // final request reports a zero-length span.
+          firstRequestIso: null,
+          lastRequestEndIso: null,
+          // [startMs, endMs] per request for the active-time union below.
+          activeSpans: [],
+        };
+        signalsBySession.set(sessionId, signals);
+      }
+      const requestStartMs = Number(row?.started_at);
+      if (Number.isFinite(requestStartMs) && requestStartMs > 0) {
+        const startIso = new Date(requestStartMs).toISOString();
+        if (!signals.firstRequestIso || startIso < signals.firstRequestIso) signals.firstRequestIso = startIso;
+        // duration_ms only exists on completed rows; an error request still
+        // occupied its start instant, so its end falls back to the start.
+        const durationMs = row.status === "completed" ? finite(row.duration_ms) : 0;
+        const endIso = new Date(requestStartMs + durationMs).toISOString();
+        if (!signals.lastRequestEndIso || endIso > signals.lastRequestEndIso) signals.lastRequestEndIso = endIso;
+        signals.activeSpans.push([requestStartMs, requestStartMs + durationMs]);
+      }
+      if (row.status === "error") {
+        signals.errorCount += 1;
+        continue;
+      }
+      if (row.query_source === "compact") signals.compactionCount += 1;
+      signals.apiDurationMs += finite(row.duration_ms);
+      signals.collector.consumeUsage({
+        model: normalizeSessionModel(row.model_id) || "unknown",
+        outputTokens: finite(row.output_tokens),
+        durationMs: finite(row.duration_ms),
+        timeToFirstTokenMs: typeof row.time_to_first_token_ms === "number" ? row.time_to_first_token_ms : undefined,
+      });
+    }
+  }
+
+  const turnsBySession = new Map();
+  const retryTurnsBySession = new Map();
+  const turnColumns = zcodeTableColumns(dbPath, "turn_usage");
+  if (turnColumns.has("session_id")) {
+    const retrySelect = turnColumns.has("model_retry_count") ? ", model_retry_count" : "";
+    const turnRows = readSqliteJsonRows(
+      dbPath,
+      `SELECT session_id${retrySelect} FROM turn_usage`,
+      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
+    );
+    for (const row of Array.isArray(turnRows) ? turnRows : []) {
+      const sessionId = String(row?.session_id || "").trim();
+      if (!sessionId) continue;
+      turnsBySession.set(sessionId, (turnsBySession.get(sessionId) || 0) + 1);
+      if (finite(row.model_retry_count) > 0) {
+        retryTurnsBySession.set(sessionId, (retryTurnsBySession.get(sessionId) || 0) + 1);
+      }
+    }
+  }
+
+  // ZCode writes Capitalized tool names (Edit/Write); EDIT_TOOLS is lowercase.
+  // An edit turn is a turn that used an edit tool, matching the Grok definition.
+  const editTurnsBySession = new Map();
+  const toolColumns = zcodeTableColumns(dbPath, "tool_usage");
+  if (toolColumns.has("session_id") && toolColumns.has("tool_name") && toolColumns.has("turn_id")) {
+    const toolRows = readSqliteJsonRows(
+      dbPath,
+      "SELECT session_id, turn_id, tool_name FROM tool_usage",
+      { label: "ZCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, throwOnReadFailure: true },
+    );
+    const editTurnIds = new Map();
+    for (const row of Array.isArray(toolRows) ? toolRows : []) {
+      if (!EDIT_TOOLS.has(String(row?.tool_name || "").toLowerCase())) continue;
+      const sessionId = String(row?.session_id || "").trim();
+      const turnId = String(row?.turn_id || "").trim();
+      if (!sessionId || !turnId) continue;
+      let turns = editTurnIds.get(sessionId);
+      if (!turns) {
+        turns = new Set();
+        editTurnIds.set(sessionId, turns);
+      }
+      turns.add(turnId);
+    }
+    for (const [sessionId, turns] of editTurnIds) editTurnsBySession.set(sessionId, turns.size);
+  }
+
+  const records = [];
+  for (const row of Array.isArray(sessionRows) ? sessionRows : []) {
+    const sessionId = String(row?.id || "").trim();
+    if (!sessionId) continue;
+    const messages = messagesBySession.get(sessionId) || [];
+    const tokens = emptyTotals();
+    const modelUsageByModel = new Map();
+    const bounds = emptyBounds();
+    const usageBuckets = new Map();
+    const messagePoints = [];
+    let messageCwd = null;
+    for (const message of messages) {
+      const data = message?.data || {};
+      // OpenCode v1 messages carry a flat modelID; v2 (session_message era)
+      // nests it as model.id, and some forks wrote model as a plain string.
+      // Resolve every shape through the shared normalizer so by-model
+      // attribution and pricing match the usage sync on v2-layout databases.
+      const model = normalizeSessionModel(normalizeOpencodeModelFields(data).modelId) || "unknown";
+      const delta = zcodeMessageTotals(data);
+      addTotals(tokens, delta);
+      let usage = modelUsageByModel.get(model);
+      if (!usage) {
+        usage = { model, ...emptyTotals(), usage_events: 0 };
+        modelUsageByModel.set(model, usage);
+      }
+      addTotals(usage, delta);
+      usage.usage_events += 1;
+      // Message timestamps are epoch-ms integers; updateBounds() only accepts
+      // ISO strings and silently drops anything else.
+      const timeUpdated = Number(message?.timeUpdated);
+      if (Number.isFinite(timeUpdated) && timeUpdated > 0) {
+        updateBounds(bounds, new Date(timeUpdated).toISOString());
+        messagePoints.push(timeUpdated);
+        // Minute buckets (same shape as the Codex scanner's) feed the from/to
+        // day filter in scopeSessionUsage; without them a multi-day session
+        // bills its whole lifetime to every day it touches.
+        const timestamp = new Date(Math.floor(timeUpdated / 60_000) * 60_000).toISOString();
+        const bucketKey = `${timestamp}\u0000${model}`;
+        const bucket = usageBuckets.get(bucketKey) || { timestamp, model, ...emptyTotals() };
+        addTotals(bucket, delta);
+        usageBuckets.set(bucketKey, bucket);
+      }
+      if (!messageCwd && typeof data.path?.cwd === "string" && data.path.cwd.trim()) {
+        messageCwd = data.path.cwd.trim();
+      }
+    }
+    // Sessions without any message (claude-import migrations the import did
+    // not rebuild, sessions abandoned before the first reply) keep the row's
+    // own wall-clock span; they end up with zero tokens and the browser's
+    // existing total_tokens > 0 filter drops them from the listing.
+    if (messages.length === 0) {
+      const created = Number(row?.time_created);
+      const updated = Number(row?.time_updated);
+      if (Number.isFinite(created) && created > 0) updateBounds(bounds, new Date(created).toISOString());
+      if (Number.isFinite(updated) && updated > 0) updateBounds(bounds, new Date(updated).toISOString());
+    }
+
+    const signals = signalsBySession.get(sessionId) || null;
+    if (signals) {
+      // Widen the wall-clock span with model_usage request extremes: message
+      // timestamps are request starts, so the final request's duration would
+      // otherwise vanish from ended_at (a 10s request reads as a 0-length
+      // span). Direct comparison instead of updateBounds() keeps active_ms
+      // (idle-gap working time) driven by the interval union below.
+      if (signals.firstRequestIso && (!bounds.started_at || signals.firstRequestIso < bounds.started_at)) {
+        bounds.started_at = signals.firstRequestIso;
+      }
+      if (signals.lastRequestEndIso && (!bounds.ended_at || signals.lastRequestEndIso > bounds.ended_at)) {
+        bounds.ended_at = signals.lastRequestEndIso;
+      }
+    }
+    // Active time = the union of request execution intervals plus message
+    // instants, with spans ≤ IDLE_GAP_MS apart bridged. updateBounds' gap
+    // accumulator only measures message-start-to-message-start, which loses
+    // the execution time of every request but the last one (two 10s requests
+    // around a 1h pause must read 20s, not 10s); the union also collapses
+    // parallel requests instead of counting them twice. Legacy-only sessions
+    // contribute points alone, which degenerates to the same idle-gap span
+    // the generic scanners produce.
+    const spans = [...(signals ? signals.activeSpans : []), ...messagePoints.map((ms) => [ms, ms])]
+      .filter(([startMs, endMs]) => Number.isFinite(startMs) && Number.isFinite(endMs))
+      .sort((a, b) => a[0] - b[0]);
+    let unionActiveMs = 0;
+    let unionStart = null;
+    let unionEnd = null;
+    for (const [startMs, endMs] of spans) {
+      if (unionStart === null) {
+        unionStart = startMs;
+        unionEnd = endMs;
+        continue;
+      }
+      if (startMs <= unionEnd + IDLE_GAP_MS) {
+        if (endMs > unionEnd) unionEnd = endMs;
+        continue;
+      }
+      unionActiveMs += unionEnd - unionStart;
+      unionStart = startMs;
+      unionEnd = endMs;
+    }
+    if (unionStart !== null) unionActiveMs += unionEnd - unionStart;
+    bounds.active_ms = unionActiveMs;
+    const finished = signals ? signals.collector.finish() : { performance: normalizePerformance(), byModel: new Map() };
+    const modelUsage = [...modelUsageByModel.values()].map((usage) => ({
+      ...usage,
+      performance: finished.byModel.get(usage.model) || normalizePerformance(),
+    }));
+    const cwd = typeof row?.directory === "string" && row.directory.trim() ? row.directory.trim() : messageCwd;
+    records.push(finalizeRecord({
+      version: SIDECAR_VERSION,
+      session_hash: sessionHash("zcode", sessionId),
+      session_id: sessionId,
+      // Local-only lineage: ZCode's own parent_id (subagent/workflow children).
+      parent_session_id: typeof row?.parent_id === "string" && row.parent_id.trim() ? row.parent_id.trim() : null,
+      // Local-only: stripped in summarizeSessions before any cloud/CSV export.
+      title: cleanSessionTitle(row?.title),
+      source: "zcode",
+      project_key: projectKey(cwd, displayPath),
+      project_ref: cwd || null,
+      model: modelUsage.length > 1 ? "mixed" : (modelUsage[0]?.model || "unknown"),
+      model_usage: modelUsage,
+      usage_buckets: [...usageBuckets.values()],
+      ...bounds,
+      turns: turnsBySession.get(sessionId) || 0,
+      edit_turns: editTurnsBySession.get(sessionId) || 0,
+      retry_turns: retryTurnsBySession.get(sessionId) || 0,
+      tokens,
+      usage_events: messages.length,
+      usage_precision: messages.length > 0 ? "reported" : "unavailable",
+      cost_source: "model_pricing",
+      provider_cost_usd: null,
+      model_calls: messages.length,
+      api_duration_ms: signals ? signals.apiDurationMs : 0,
+      error_count: signals ? signals.errorCount : 0,
+      compaction_count: signals ? signals.compactionCount : 0,
+      performance: finished.performance,
+      provenance: {
+        source: "local-session-log",
+        confidence: "observed",
+        retry_confidence: "inferred",
+        content_retained: false,
+        usage: messages.length > 0 ? "zcode-db-messages" : "unavailable",
+      },
+    }));
+  }
+  return records;
+}
+
 // Multi-root discovery: on Windows a native install and a WSL one both count.
 // `sync` already walks both Claude homes (src/commands/sync.js), so without this
 // the WSL work lands in the token totals but is invisible in the session browser
@@ -1387,7 +1758,36 @@ async function discoverSessionFiles(home, env = process.env, deps = {}) {
   const claude = allClaude.filter((filePaths) => !filePaths.some((filePath) => filePath
     .split(path.sep)
     .some((segment) => segment.endsWith(CLAUDE_MEM_OBSERVER_PROJECT_SUFFIX))));
-  return { claude, codex: groupCodexFiles([...codex, ...archived]), grok, incomplete };
+  // ZCode has no sessions directory tree — one SQLite db per install. Resolve
+  // it like the usage sync does (src/commands/sync.js): native candidate first
+  // (ZCODE_HOME, home, win32 APPDATA fallback), then the WSL install when the
+  // WSL mode probes it, picked with the same mode priority (default wsl-first)
+  // so the browser reads the same db the usage card counts. Unlike sync's
+  // "both" mode — which reads two dbs and dedups them by message fingerprint —
+  // the session scan has no cross-db identity, so it always keeps exactly one
+  // db rather than risk double-counting one install under two path spellings.
+  const zcodePlatform = deps.platform || process.platform;
+  const zcodeNativeDbPath = (deps.resolveZcodeNativeDbPath || resolveZcodeNativeDbPath)({ home, env });
+  // Same WSL gate as providerRoots(): discoverWslHome resolves \\wsl$
+  // independently of `home`, so a custom/injected home must not splice the
+  // machine's live WSL db into an isolated scan. `probeWsl` is the deliberate
+  // opt-in (defaults to true only for the machine's own home).
+  const zcodeProbeWsl = deps.probeWsl !== undefined
+    ? Boolean(deps.probeWsl)
+    : path.resolve(home) === path.resolve((deps.homedir || os.homedir)());
+  const zcodeWslHome = zcodePlatform === "win32" && zcodeProbeWsl && wsl.shouldProbeWsl(env)
+    ? (deps.discoverWslHome || wsl.discoverWslHome)(".zcode", { env })
+    : null;
+  const zcodeExisting = (dbPath) => (dbPath && fs.existsSync(dbPath) ? dbPath : null);
+  const zcodeWslDbPath = zcodeWslHome ? path.join(zcodeWslHome, "cli", "db", "db.sqlite") : null;
+  const zcodeDbPath = zcodePlatform === "win32"
+    ? (deps.pickWin32Path || wsl.pickWin32Path)({
+      nativeValue: zcodeExisting(zcodeNativeDbPath),
+      wslValue: zcodeExisting(zcodeWslDbPath),
+    }, env)
+    : zcodeExisting(zcodeNativeDbPath);
+  const zcode = zcodeDbPath ? [zcodeDbPath] : [];
+  return { claude, codex: groupCodexFiles([...codex, ...archived]), grok, zcode, incomplete };
 }
 
 // Warn once per unreadable directory per process: the dashboard polls this
@@ -1492,6 +1892,12 @@ function analyticsEntryStatKey(source, filePath) {
     const primary = filePaths[0];
     return `${sessionStat}|summary:${sessionFileStatKey(grokSummaryPathFor(primary)) || "missing"}|signals:${sessionFileStatKey(grokSignalsPathFor(primary)) || "missing"}`;
   }
+  if (source === "zcode") {
+    // A WAL-mode db can absorb writes without touching the main file's mtime,
+    // so the sidecar files are part of the db's identity for cache checks.
+    const primary = filePaths[0];
+    return `${sessionStat}|wal:${sessionFileStatKey(`${primary}-wal`) || "missing"}|shm:${sessionFileStatKey(`${primary}-shm`) || "missing"}`;
+  }
   return sessionStat;
 }
 
@@ -1553,6 +1959,8 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     ...discovered.grok,
     ...discovered.grok.map(grokSummaryPathFor),
     ...discovered.grok.map(grokSignalsPathFor),
+    // db + its WAL sidecars: the trio is one logical file for change detection.
+    ...(discovered.zcode || []).flatMap((dbPath) => [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]),
   ]);
   if (!force && previousMeta?.version === SIDECAR_VERSION && previousMeta.signature === signature) {
     await writeAtomic(metaPath, `${JSON.stringify({ ...previousMeta, checked_at: new Date().toISOString() })}\n`);
@@ -1574,6 +1982,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     ...discovered.claude.map((filePaths) => ({ source: "claude", filePath: filePaths, scan: scanClaudeSession })),
     ...discovered.codex.map((filePaths) => ({ source: "codex", filePath: filePaths, scan: scanCodexSession })),
     ...discovered.grok.map((filePath) => ({ source: "grok", filePath, scan: scanGrokSession })),
+    ...discovered.zcode.map((filePath) => ({ source: "zcode", filePath, scan: scanZcodeSessions })),
   ];
   // Files we could not turn into a row (permission denied, half-written line,
   // vanished mid-scan). Swallowing these silently made sessions disappear with
@@ -1586,13 +1995,22 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       skippedFiles += 1;
       continue;
     }
-    let row = null;
+    let rows = null;
     if (!force && previousFiles[cacheKey]?.stat_key === statKey) {
-      row = previousRowsByFile.get(cacheKey) || null;
+      if (entry.source === "zcode") {
+        // One db scans to many cached rows; recover them all from the previous
+        // pass. An empty recovery means the sidecar lost its rows — rescan.
+        const cached = previousRows.filter((row) => row?.source === "zcode");
+        rows = cached.length ? cached : null;
+      } else {
+        const row = previousRowsByFile.get(cacheKey) || null;
+        rows = row ? [row] : null;
+      }
     }
-    if (!row) {
+    if (!rows) {
       try {
-        row = await entry.scan(entry.filePath);
+        const scanned = await entry.scan(entry.filePath);
+        rows = Array.isArray(scanned) ? scanned.filter(Boolean) : (scanned ? [scanned] : []);
       } catch (error) {
         // One active/partial session must not poison the sidecar, but do not
         // pretend it never existed either.
@@ -1600,15 +2018,22 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
         if (!process.env.NODE_TEST_CONTEXT) {
           console.warn(`[session-analytics] skipped ${entry.source} session file: ${error?.message || error}`);
         }
+        rows = [];
       }
     }
-    if (!row) continue;
-    repriceSessionRecord(row);
-    // A one-way file hash enables incremental reuse without persisting or
-    // exposing the user's local session path.
-    row._cache_key = cacheKey;
-    sessions.push(row);
-    nextFiles[cacheKey] = { stat_key: statKey };
+    for (const row of rows) {
+      repriceSessionRecord(row);
+      // A one-way file hash enables incremental reuse without persisting or
+      // exposing the user's local session path. ZCode's rows all share one db,
+      // so key each by the db path plus its session id; a bare session id as a
+      // separate path element would be path.resolve()d against the process cwd
+      // and never match across runs.
+      row._cache_key = entry.source === "zcode" && row.session_id
+        ? sessionFileCacheKey("zcode", `${entry.filePath}#${row.session_id}`)
+        : cacheKey;
+      sessions.push(row);
+    }
+    if (rows.length > 0) nextFiles[cacheKey] = { stat_key: statKey };
   }
   sessions.sort((a, b) => String(b.ended_at || "").localeCompare(String(a.ended_at || "")));
   if (incompleteDirs.length === 0) {
@@ -1708,7 +2133,7 @@ function scopeSessionUsage(row, from, to, context) {
 
 function summarizeSessions(sessions, { from = "", to = "", includeSessions = true, timeZone, offsetMinutes } = {}) {
   const context = { timeZone, offsetMinutes };
-  const filtered = annotateCodexThreadUsage((sessions || [])
+  const filtered = annotateThreadUsage((sessions || [])
     .filter((row) => withinDayRange(row, from, to, context))
     // Efficiency is a session-lifetime metric: both tokens and edit turns
     // must describe that same population. The browser scopes consumption
@@ -2079,16 +2504,19 @@ function mergeSessionFragments(rows) {
   return merged;
 }
 
-// Attach exact Codex parent/child usage without changing the authoritative
-// per-session total_tokens field. Combined fields are derived views only, so
-// summing total_tokens across all rows still equals the global usage ledger.
-function annotateCodexThreadUsage(rows) {
+// Attach exact Codex/ZCode parent→child usage without changing the
+// authoritative per-session total_tokens field. Combined fields are derived
+// views only, so summing total_tokens across all rows still equals the global
+// usage ledger. ZCode joins the same lineage pass: its subagent/workflow
+// children carry parent_session_id from the session table, so the browser can
+// nest them under their parent and count them as its subagents.
+function annotateThreadUsage(rows) {
   const byId = new Map();
   const childrenById = new Map();
   const linkedParentById = new Map();
 
   for (const row of rows || []) {
-    if (row?.source !== "codex" || typeof row.session_id !== "string" || !row.session_id) continue;
+    if ((row?.source !== "codex" && row?.source !== "zcode") || typeof row.session_id !== "string" || !row.session_id) continue;
     const existing = byId.get(row.session_id);
     if (existing && existing !== row) {
       existing.parent_link_conflict = true;
@@ -2165,12 +2593,14 @@ function annotateCodexThreadUsage(rows) {
   }
 
   for (const row of rows || []) {
+    const threadAware = (row.source === "codex" || row.source === "zcode")
+      && typeof row.session_id === "string" && row.session_id;
     row.own_total_tokens = finite(row.total_tokens);
     row.own_cost_usd = finite(row.cost_usd);
-    row.direct_subagent_count = row.source === "codex" && row.session_id
+    row.direct_subagent_count = threadAware
       ? (childrenById.get(row.session_id) || []).length
       : 0;
-    const nested = row.source === "codex" && row.session_id
+    const nested = threadAware
       ? aggregate(row)
       : { count: 0, tokens: 0, cost: 0 };
     row.descendant_subagent_count = nested.count;
@@ -2178,7 +2608,7 @@ function annotateCodexThreadUsage(rows) {
     row.subagent_cost_usd = nested.cost;
     row.combined_total_tokens = finite(row.total_tokens) + nested.tokens;
     row.combined_cost_usd = finite(row.cost_usd) + nested.cost;
-    if (row.source === "codex" && row.session_id) {
+    if (threadAware) {
       const parent = byId.get(linkedParentById.get(row.session_id));
       row.parent_session_hash = parent?.session_hash || null;
       row.root_session_hash = rootFor(row).session_hash || row.session_hash;
@@ -2193,7 +2623,7 @@ function annotateCodexThreadUsage(rows) {
 // local API.
 function listSessionsForBrowser(sessions, { from = "", to = "", limit = 0, timeZone, offsetMinutes } = {}) {
   const context = { timeZone, offsetMinutes };
-  const filtered = annotateCodexThreadUsage(mergeSessionFragments(sessions)
+  const filtered = annotateThreadUsage(mergeSessionFragments(sessions)
     // Only sessions that actually spent tokens are worth listing. This drops
     // two kinds of noise: non-session logs under ~/.claude/projects
     // (skill-injections.jsonl, journal.jsonl, …), and sessions abandoned before
@@ -2236,6 +2666,7 @@ module.exports = {
   scanClaudeSession,
   scanCodexSession,
   scanGrokSession,
+  scanZcodeSessions,
   buildSessionAnalytics,
   summarizeSessions,
   listSessionsForBrowser,

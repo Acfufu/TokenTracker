@@ -37,6 +37,7 @@ const SOURCE_FILTERS = [
   { id: "claude", label: () => "Claude Code" },
   { id: "codex", label: () => "Codex" },
   { id: "grok", label: () => "Grok" },
+  { id: "zcode", label: () => "ZCode" },
 ];
 
 const DATE_RANGES = [
