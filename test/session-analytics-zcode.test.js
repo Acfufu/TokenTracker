@@ -577,6 +577,45 @@ sqliteTest("failed ZCode rebuilds preserve the complete cache and retry unchange
   assert.equal(recovered[0].total_tokens, first[0].total_tokens);
 });
 
+sqliteTest("a forced scan under a real SQLite lock invalidates TTL and unchanged-stat reuse until recovery", async (t) => {
+  const { home, dbPath } = buildDb(t, (db) => {
+    insertSession(db, { id: "locked" });
+    insertModelUsage(db, { id: "locked-request", sessionId: "locked", input: 100, output: 200 });
+  });
+  const previousZcodeHome = process.env.ZCODE_HOME;
+  const previousMode = process.env.TOKENTRACKER_WSL_MODE;
+  process.env.ZCODE_HOME = path.join(home, ".zcode");
+  process.env.TOKENTRACKER_WSL_MODE = "native-only";
+  const lock = new DatabaseSync(dbPath);
+  try {
+    const first = await buildSessionAnalytics({ home, force: true });
+    const sidecar = resolveSessionSidecarPath(home);
+    const beforeSidecar = fs.readFileSync(sidecar, "utf8");
+    const beforeMeta = fs.readFileSync(`${sidecar}.meta.json`, "utf8");
+    const stat = fs.statSync(dbPath);
+    lock.exec("BEGIN EXCLUSIVE");
+    for (const options of [{ force: true }, {}, { cacheTtlMs: 0 }]) {
+      const failed = await buildSessionAnalytics({ home, ...options });
+      assert.equal(failed.skippedFiles, 1);
+      assert.equal(failed[0].total_tokens, first[0].total_tokens);
+      assert.equal(fs.readFileSync(sidecar, "utf8"), beforeSidecar);
+      assert.equal(fs.readFileSync(`${sidecar}.meta.json`, "utf8"), beforeMeta);
+      assert.equal(fs.statSync(dbPath).mtimeMs, stat.mtimeMs);
+    }
+    lock.exec("ROLLBACK");
+    const recovered = await buildSessionAnalytics({ home });
+    assert.equal(recovered.skippedFiles, 0);
+    assert.equal(recovered[0].total_tokens, first[0].total_tokens);
+    assert.equal(fs.existsSync(`${sidecar}.meta.json.zcode-incomplete`), false);
+  } finally {
+    lock.close();
+    if (previousZcodeHome === undefined) delete process.env.ZCODE_HOME;
+    else process.env.ZCODE_HOME = previousZcodeHome;
+    if (previousMode === undefined) delete process.env.TOKENTRACKER_WSL_MODE;
+    else process.env.TOKENTRACKER_WSL_MODE = previousMode;
+  }
+});
+
 const wslTest = DatabaseSync && process.platform === "win32" ? test : test.skip;
 
 function buildDualDbs(t) {

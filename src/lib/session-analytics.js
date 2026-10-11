@@ -79,7 +79,8 @@ const {
 // inventories that earlier builds may have cached after a failed database read.
 // v19 scans both ZCode installs as one deduplicated inventory and separates
 // provider retries from repeated user requests.
-const SIDECAR_VERSION = 19;
+// v20 also invalidates unchanged-stat caches after an observed database lock.
+const SIDECAR_VERSION = 20;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1959,13 +1960,18 @@ async function writeAtomic(filePath, content) {
 async function buildSessionAnalyticsInternal({ home = os.homedir(), force = false, cacheTtlMs = 5 * 60_000 } = {}) {
   const sidecarPath = resolveSessionSidecarPath(home);
   const metaPath = `${sidecarPath}.meta.json`;
+  // A lock/permission failure need not alter the database's stat signature.
+  // Keep a separate durable invalidation marker while preserving the complete
+  // sidecar and metadata. TTL, signature and per-file reuse must all retry it.
+  const incompleteZcodePath = `${metaPath}.zcode-incomplete`;
+  const retryZcodeScan = fs.existsSync(incompleteZcodePath);
   let previousMeta = null;
   if (!force) {
     try {
       previousMeta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const checkedAt = Date.parse(previousMeta.checked_at || previousMeta.generated_at || "");
       if (
-        previousMeta.version === SIDECAR_VERSION &&
+        !retryZcodeScan && previousMeta.version === SIDECAR_VERSION &&
         Number.isFinite(checkedAt) &&
         Date.now() - checkedAt < Math.max(0, Number(cacheTtlMs) || 0)
       ) {
@@ -2001,7 +2007,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     // db + its WAL sidecars: the trio is one logical file for change detection.
     ...(discovered.zcode || []).flatMap((dbPath) => [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]),
   ]);
-  if (!force && previousMeta?.version === SIDECAR_VERSION && previousMeta.signature === signature) {
+  if (!force && !retryZcodeScan && previousMeta?.version === SIDECAR_VERSION && previousMeta.signature === signature) {
     await writeAtomic(metaPath, `${JSON.stringify({ ...previousMeta, checked_at: new Date().toISOString() })}\n`);
     return readSidecar(sidecarPath);
   }
@@ -2037,7 +2043,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       continue;
     }
     let rows = null;
-    if (!force && previousFiles[cacheKey]?.stat_key === statKey) {
+    if (!force && !(entry.source === "zcode" && retryZcodeScan) && previousFiles[cacheKey]?.stat_key === statKey) {
       if (entry.source === "zcode") {
         // One db scans to many cached rows; recover them all from the previous
         // pass. An empty recovery means the sidecar lost its rows — rescan.
@@ -2078,6 +2084,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     if (rows.length > 0) nextFiles[cacheKey] = { stat_key: statKey };
   }
   if (incompleteZcodeScan) {
+    await writeAtomic(incompleteZcodePath, "1\n");
     // ZCode databases form one deduplicated inventory. If any read fails, retain its last
     // complete rows even on a forced refresh; skippedFiles still reports that
     // these rows could not be refreshed. Older cache schemas must be rebuilt.
@@ -2098,6 +2105,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       checked_at: generatedAt,
       files: nextFiles,
     })}\n`);
+    await fsp.rm(incompleteZcodePath, { force: true });
   }
   // Non-enumerable so the array still behaves exactly like a plain row list
   // for every existing caller (map/filter/JSON of the rows is unaffected).
