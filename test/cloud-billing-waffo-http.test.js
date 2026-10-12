@@ -1206,3 +1206,167 @@ test("renewed stays retryable without a same-ORD same-period real charge even if
   const after=await account(owner);assert.equal(after.payments.length,1);assert.equal(after.membership.expires_at,before.membership.expires_at);
   assert.equal((await db.query("SELECT count(*)::int n FROM tokentracker_cloud_events WHERE order_id=$1",[row.id])).rows[0].n,eventCount);
 });
+
+test("replacement-only and legacy amount notifications reconcile verified money and incremental refunds", async () => {
+  for (const fields of ["replacement", "legacy", "both"]) {
+    const owner = await user(); const created = await checkout(owner, "cloud_usd_monthly_fixed");
+    assert.equal(created.response.status, 200);
+    const row = await localOrder(created.data.order.id); const remote = makeRemote(row, 100);
+    const notice = notification(remote, "order.completed", {
+      paymentId: remote.payments[0].id,
+      ...(fields !== "legacy" ? { chargedAmount: "5.99", listPrice: breakdown(499, 100) } : {}),
+      ...(fields !== "replacement" ? { amount: "5.99", total: "5.99", subtotal: "4.99", taxAmount: "1.00" } : {}),
+    });
+    notice.id = notice.eventId;
+    let initial;
+    if (fields !== "replacement") {
+      assert.equal((await webhook(notice)).response.status, 200, fields);
+      initial = await account(owner); assert.equal(initial.payments[0].amount_cents, 599, fields);
+    }
+    const refund = { id: shortId("REF"), paymentId: remote.payments[0].id, status: "succeeded", testMode: true,
+      orderMerchantExternalId: row.id, createdAt: new Date().toISOString(), amount: money(99),
+      pspAmountDetails: { currency: "USD", amount: "0.99" } };
+    remote.payments[0].refunds.push(refund);
+    const refunded = notification(remote, "refund.succeeded", {
+      paymentId: refund.paymentId,
+      ...(fields !== "legacy" ? { refundedAmount: "0.99", originalChargedAmount: "5.99", originalPayment: breakdown(499, 100) } : {}),
+      ...(fields !== "replacement" ? { amount: "0.99", total: "5.99", taxAmount: "0" } : {}),
+    });
+    refunded.id = refunded.eventId;
+    // The replacement-only case first receives the refund, before any payment notification.
+    assert.equal((await webhook(refunded)).response.status, 200, fields);
+    initial ||= await account(owner);
+    for (const event of [notice, refunded]) assert.equal((await webhook(event)).response.status, 200, fields);
+    const state = await account(owner);
+    assert.equal(state.payments.length, 1); assert.equal(state.payments[0].amount_cents, 599);
+    assert.equal(state.payments[0].refunded_cents, 99); assert.equal(state.membership.expires_at, initial.membership.expires_at);
+    assert.equal(state.membership.can_upload_cloud, true);
+  }
+});
+
+test("consistent prorated webhook and PSP amounts are rejected by the current fixed-price product contract", async () => {
+  for (const actual of [299, 599]) {
+    const owner = await user(); const created = await checkout(owner);
+    const row = await localOrder(created.data.order.id); const remote = makeRemote(row);
+    remote.payments[0].amount = money(actual); remote.payments[0].pspAmountDetails.amount = decimal(actual);
+    const event = notification(remote, "subscription.payment_succeeded", {
+      paymentId: remote.payments[0].id, chargedAmount: decimal(actual), amount: decimal(actual),
+      listPrice: breakdown(499, 0), total: "4.99", periodNumber: 1,
+    });
+    const rejected = await webhook(event); assert.equal(rejected.response.status, 400);
+    assert.equal(rejected.data.error, "payment_amount_mismatch");
+    const state = await account(owner); assert.equal(state.payments.length, 0);
+    assert.equal(state.membership.can_upload_cloud, false);
+  }
+});
+
+test("distinct PAY and REF actions in the same period are retained without extending the term twice", async () => {
+  const owner = await user(); const created = await checkout(owner);
+  const row = await localOrder(created.data.order.id); const remote = makeRemote(row);
+  const first = remote.payments[0]; const second = { ...structuredClone(first), id: shortId("PAY") };
+  remote.payments.push(second);
+  const paymentNotice = payment => {
+    const event = notification(remote, "subscription.payment_succeeded", {
+      paymentId: payment.id, periodNumber: 1, chargedAmount: "4.99", listPrice: breakdown(499, 0),
+    });
+    event.id = event.eventId = payment.id;
+    return event;
+  };
+  for (const event of [paymentNotice(second), notification(remote), paymentNotice(first), paymentNotice(second)]) {
+    assert.equal((await webhook(event)).response.status, 200);
+  }
+  const paid = await account(owner); assert.equal(paid.payments.length, 2);
+  assert.equal(Date.parse(paid.membership.expires_at), Date.parse(remote.currentPeriodEnd));
+  for (const amount of [99, 100]) first.refunds.push({ id: shortId("REF"), paymentId: first.id,
+    status: "succeeded", testMode: true, orderMerchantExternalId: row.id, createdAt: new Date().toISOString(),
+    amount: money(amount), pspAmountDetails: { currency: "USD", amount: decimal(amount) } });
+  const refundNotice = notification(remote, "refund.succeeded", { paymentId: first.id, periodNumber: 1,
+    refundedAmount: "1.00", originalChargedAmount: "4.99", originalPayment: breakdown(499, 0) });
+  for (const event of [refundNotice, paymentNotice(first), refundNotice]) assert.equal((await webhook(event)).response.status, 200);
+  const state = await account(owner);
+  assert.equal(state.payments.length, 2);
+  const balances = await db.query("SELECT transaction_id,refunded_cents FROM tokentracker_cloud_payments WHERE order_id=$1", [row.id]);
+  assert.equal(balances.rows.find(p => p.transaction_id === first.id).refunded_cents, 199);
+  assert.equal(balances.rows.find(p => p.transaction_id === second.id).refunded_cents, 0);
+  assert.equal(state.membership.expires_at, paid.membership.expires_at);
+  assert.equal((await db.query("SELECT count(*)::int n FROM tokentracker_cloud_events WHERE order_id=$1 AND kind='refund'", [row.id])).rows[0].n, 2);
+});
+
+test("simulated renewal success accepts either delivery order without requiring subscription fields on the charge", async () => {
+  for (const paymentFirst of [true, false]) {
+    const owner = await user(); const created = await checkout(owner);
+    const row = await localOrder(created.data.order.id); const remote = makeRemote(row);
+    assert.equal((await webhook(notification(remote))).response.status, 200);
+    const starts = remote.currentPeriodEnd; const ends = new Date(starts); ends.setUTCMonth(ends.getUTCMonth() + 1);
+    const payment = { ...structuredClone(remote.payments[0]), id: shortId("PAY"), periodNumber: 2, createdAt: new Date().toISOString() };
+    remote.payments.push(payment); remote.currentPeriodNumber = 2;
+    remote.currentPeriodStart = starts; remote.currentPeriodEnd = ends.toISOString();
+    remote.updatedAt = new Date(Date.now() + 1000).toISOString();
+    const charged = notification(remote, "subscription.payment_succeeded", { paymentId: payment.id,
+      periodNumber: 2, chargedAmount: "4.99", listPrice: breakdown(499, 0) });
+    charged.id = charged.eventId = payment.id;
+    assert.equal(charged.data.currentPeriodStart, undefined); assert.equal(charged.data.orderStatus, undefined);
+    const renewed = notification(remote, "subscription.renewed", { orderStatus: "active", planPrice: breakdown(499, 0) });
+    renewed.id = renewed.eventId = `${remote.id}-renewed-${remote.currentPeriodEnd.slice(0, 10)}`;
+    for (const event of paymentFirst ? [charged, renewed, charged] : [renewed, charged, renewed]) {
+      assert.equal((await webhook(event)).response.status, 200);
+    }
+    const state = await account(owner); assert.equal(state.payments.length, 2);
+    assert.equal(state.subscriptions[0].status, "active"); assert.equal(state.subscriptions[0].next_billed_at, remote.currentPeriodEnd);
+    assert.equal(Date.parse(state.membership.expires_at), Date.parse(remote.currentPeriodEnd));
+  }
+});
+
+test("simulated failure consumes a period; recovery at P3 records two successful charges and ignores a late P2 notice", async () => {
+  const owner = await user(); const created = await checkout(owner);
+  const row = await localOrder(created.data.order.id); const remote = makeRemote(row);
+  assert.equal((await webhook(notification(remote))).response.status, 200);
+  const paid = await account(owner); const previousEnd = remote.currentPeriodEnd;
+  const failed = { ...structuredClone(remote.payments[0]), id: shortId("PAY"), status: "failed", periodNumber: 2,
+    createdAt: new Date().toISOString() };
+  remote.payments.push(failed); remote.status = "past_due"; remote.willRenew = false; remote.currentPeriodNumber = 2;
+  remote.currentPeriodStart = previousEnd; remote.currentPeriodEnd = new Date(Date.parse(previousEnd) + 3600_000).toISOString();
+  remote.updatedAt = new Date(Date.now() + 1000).toISOString();
+  const overdue = notification(remote, "subscription.past_due", { orderStatus: "past_due", planPrice: breakdown(499, 0) });
+  overdue.id = overdue.eventId = `${remote.id}-${overdue.timestamp}`;
+  assert.equal((await webhook(overdue)).response.status, 200);
+  const state = await account(owner); assert.equal(state.payments.length, 1); assert.equal(state.subscriptions[0].status, "past_due");
+  assert.equal(state.membership.expires_at, paid.membership.expires_at);
+  const ends = new Date(previousEnd); ends.setUTCMonth(ends.getUTCMonth() + 1);
+  remote.status = "active"; remote.willRenew = true; remote.currentPeriodNumber = 3;
+  remote.currentPeriodEnd = ends.toISOString(); remote.updatedAt = new Date(Date.now() + 2000).toISOString();
+  const success = { ...structuredClone(failed), id: shortId("PAY"), status: "succeeded", periodNumber: 3 };
+  remote.payments.push(success);
+  const recovered = notification(remote, "subscription.recovered", { orderStatus: "active", planPrice: breakdown(499, 0) });
+  recovered.id = recovered.eventId = `${remote.id}-${recovered.timestamp}`;
+  const charged = notification(remote, "subscription.payment_succeeded", { paymentId: success.id, periodNumber: 3, chargedAmount: "4.99" });
+  charged.id = charged.eventId = success.id;
+  for (const event of [recovered, charged, overdue, recovered, charged]) assert.equal((await webhook(event)).response.status, 200);
+  const after = await account(owner); assert.equal(after.payments.length, 2);
+  assert.equal(after.subscriptions[0].status, "active"); assert.equal(after.subscriptions[0].next_billed_at, remote.currentPeriodEnd);
+  const periods = await db.query("SELECT period_number FROM tokentracker_cloud_waffo_periods WHERE order_id=$1 ORDER BY period_number", [row.id]);
+  assert.deepEqual(periods.rows.map(p => p.period_number), [1, 3]);
+});
+
+test("a second simulated failure terminates without granting another term or being undone by an old activation", async () => {
+  const owner = await user(); const created = await checkout(owner);
+  const row = await localOrder(created.data.order.id); const remote = makeRemote(row);
+  const activated = notification(remote);
+  assert.equal((await webhook(activated)).response.status, 200);
+  const paid = await account(owner);
+  for (const number of [2, 3]) {
+    remote.payments.push({ ...structuredClone(remote.payments[0]), id: shortId("PAY"), status: "failed", periodNumber: number });
+    remote.currentPeriodNumber = number; remote.currentPeriodStart = remote.currentPeriodEnd;
+    remote.currentPeriodEnd = new Date(Date.parse(remote.currentPeriodStart) + 3600_000).toISOString();
+    remote.status = number === 2 ? "past_due" : "canceled"; remote.willRenew = false;
+    remote.updatedAt = new Date(Date.now() + number * 1000).toISOString();
+    const event = notification(remote, number === 2 ? "subscription.past_due" : "subscription.canceled");
+    event.id = event.eventId = number === 2 ? `${remote.id}-${event.timestamp}` : remote.id;
+    assert.equal((await webhook(event)).response.status, 200);
+  }
+  assert.equal((await webhook(activated)).response.status, 200);
+  const state = await account(owner); assert.equal(state.payments.length, 1);
+  assert.equal(state.subscriptions[0].status, "canceled"); assert.equal(state.subscriptions[0].next_billed_at, null);
+  assert.equal(state.membership.expires_at, paid.membership.expires_at);
+  assert.equal((await db.query("SELECT count(*)::int n FROM tokentracker_cloud_waffo_periods WHERE order_id=$1", [row.id])).rows[0].n, 1);
+});

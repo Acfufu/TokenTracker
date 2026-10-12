@@ -361,6 +361,8 @@ test("Waffo SDK verifies exact raw webhook bytes, replay window, expected enviro
   const sign = (payload, ts = timestamp) => `t=${ts},v1=${createSign("sha256").update(`${ts}.${payload}`).sign(keys.privateKey, "base64")}`;
   const raw = JSON.stringify(event);
   assert.deepEqual(verifyWaffoWebhook(raw, sign(raw), config), event);
+  // Waffo retries retain the original signature timestamp, including the last retry.
+  assert.deepEqual(verifyWaffoWebhook(raw, sign(raw, timestamp - 31 * 60_000), config), event);
   assert.throws(() => verifyWaffoWebhook(raw + " ", sign(raw), config), /invalid_signature/);
   assert.throws(() => verifyWaffoWebhook(raw, sign(raw, timestamp - 46 * 60_000), config), /invalid_signature/);
   assert.throws(() => verifyWaffoWebhook(raw, sign(raw, timestamp + 120_000), config), /invalid_signature/);
@@ -384,6 +386,36 @@ test("the verified product snapshot and PSP charge preserve tax without guessing
   assert.equal(events[1].next_billed_at, r.currentPeriodEnd);
   assert.equal(events[1].occurred_at, r.updatedAt);
   assert.equal(events[1].amount_cents, undefined);
+});
+
+test("a prorated actual charge cannot silently become a full-price TokenTracker purchase", async () => {
+  for (const target of [order, fixed]) {
+    for (const actual of [299, 599]) {
+      const r = remote(target);
+      r.payments[0].amount = money(actual);
+      r.payments[0].pspAmountDetails.amount = display(actual);
+      // Both actual-money sources agree; only the list-price snapshot differs.
+      await assert.rejects(queryWaffoOrder(target, config, lookup([r], target)), /payment_amount_mismatch/);
+    }
+  }
+});
+
+test("fully-refunded metadata on a zero authorization is not evidence of a refund", async () => {
+  const r = remote();
+  r.currentPeriodNumber = 0; r.currentPeriodStart = null; r.currentPeriodEnd = null;
+  r.payments = [zeroAuthorization(r)];
+  r.payments[0].isFullyRefunded = true;
+  r.payments[0].refundedAmount = money(0);
+  const events = await queryWaffoOrder(order, config, lookup([r]));
+  assert.equal(events.filter(e => e.kind === "authorization").length, 1);
+  assert.equal(events.filter(e => e.kind === "payment" || e.kind === "refund").length, 0);
+});
+
+test("missing PSP amounts remain unknown even when GraphQL falls back to the list price", async () => {
+  for (const value of [null, {}, { currency: "USD" }]) {
+    const r = remote(); r.payments[0].pspAmountDetails = value;
+    await assert.rejects(queryWaffoOrder(order, config, lookup([r])));
+  }
 });
 
 test("provider order, payment, product version and tax snapshots must all match the local owner", async () => {
