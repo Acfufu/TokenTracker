@@ -127,6 +127,20 @@ test("failed replacement leaves the original queue and offset available for retr
   assert.equal((await compactPendingQueue({ ...x, minPendingBytes: 0 })).compacted, true);
 });
 
+test("replacement ENOENT remains an error after the input handle closes", async (t) => {
+  const raw = encode(row("a", 100)) + encode(row("a", 0));
+  const x = await fixture(t, raw);
+  const realRename = fs.rename;
+  fs.rename = async () => { throw Object.assign(new Error("replacement missing"), { code: "ENOENT" }); };
+  try {
+    await assert.rejects(compactPendingQueue({ ...x, minPendingBytes: 0 }), { code: "ENOENT" });
+  } finally {
+    fs.rename = realRename;
+  }
+  assert.equal(await fs.readFile(x.queuePath, "utf8"), raw);
+  assert.deepEqual(await fs.readdir(path.dirname(x.queuePath)), ["queue.jsonl"]);
+});
+
 test("compaction preserves existing permissions under a restrictive umask", { skip: process.platform === "win32" }, async (t) => {
   const x = await fixture(t, encode(row("a", 100)) + encode(row("a", 0)));
   await fs.chmod(x.queuePath, 0o640);

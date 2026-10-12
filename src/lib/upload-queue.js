@@ -122,7 +122,7 @@ async function compactPendingQueue({ queuePath, offset = 0, minPendingBytes = BA
     temporary = null;
     return { compacted: true, removedRecords, pendingBytesBefore, pendingBytesAfter };
   } catch (error) {
-    if (error.code === "ENOENT" && !input) return { compacted: false, removedRecords: 0, pendingBytesBefore: 0, pendingBytesAfter: 0 };
+    if (error.code === "ENOENT" && !input && !temporary) return { compacted: false, removedRecords: 0, pendingBytesBefore: 0, pendingBytesAfter: 0 };
     throw error;
   } finally {
     await input?.close();
