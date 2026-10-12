@@ -6,7 +6,7 @@
 
 ### AI に使ったコストを正確に把握 — すべての CLI を横断して
 
-**44 種類の AI コーディングツール**からトークン数を自動収集し、ローカルで集計、美しいダッシュボードで本当のコスト推移を可視化します。クラウドアカウント不要、API キー不要、セットアップ不要 — コマンド 1 つで完了です。
+**45 種類の AI コーディングツール**からトークン数を自動収集し、ローカルで集計、美しいダッシュボードで本当のコスト推移を可視化します。クラウドアカウント不要、API キー不要、セットアップ不要 — コマンド 1 つで完了です。
 
 [![npm version](https://img.shields.io/npm/v/tokentracker-cli.svg?color=blue)](https://www.npmjs.com/package/tokentracker-cli)
 [![npm downloads](https://img.shields.io/npm/dm/tokentracker-cli.svg?color=brightgreen)](https://www.npmjs.com/package/tokentracker-cli)
@@ -88,7 +88,7 @@ brew install xiufengsun/tokentracker/tokentracker
 
 ## ✨ 機能
 
-- 🔌 **44 種類の AI ツールを標準対応** — Claude Code、Codex CLI、AStudio、Cursor、Gemini CLI、Antigravity、Kiro、OpenCode、OpenClaw、Every Code、Hermes Agent、GitHub Copilot、Kimi Code、CodeBuddy、WorkBuddy、Grok Build、oh-my-pi、OmO、pi、Dots、Prime Agent、Craft Agents、Reasonix、Kilo CLI、Kilo Code、Roo Code、Zed Agent、Goose、Droid、Mimo Code、ZCode、Qoder、AnythingLLM Desktop、Claude Science、DeepSeek Harness、TRAE Work CN、LM Studio、Unsloth Studio、Devin CLI、Cline、MiniMax Code、Command Code、TRAE
+- 🔌 **45 種類の AI ツールを標準対応** — Claude Code、Codex CLI、AStudio、Cursor、Gemini CLI、Antigravity、Kiro、OpenCode、OpenClaw、Every Code、Hermes Agent、GitHub Copilot、Kimi Code、CodeBuddy、WorkBuddy、Grok Build、oh-my-pi、OmO、pi、Dots、Prime Agent、Craft Agents、Reasonix、Kilo CLI、Kilo Code、Roo Code、Zed Agent、Goose、Droid、Mimo Code、DuMate、ZCode、Qoder、AnythingLLM Desktop、Claude Science、DeepSeek Harness、TRAE Work CN、LM Studio、Unsloth Studio、Devin CLI、Cline、MiniMax Code、Command Code、TRAE
 - 🏠 **ローカルファースト** — すべてマシン上で動作。アカウントや API キーなしでログをローカル解析します。
 - 🚀 **ゼロコンフィグ** — Hook は初回実行で自動インストール。0 からダッシュボードまで 30 秒。
 - 📊 **美しいダッシュボード** — 使用トレンド、モデル別コスト内訳、GitHub スタイルのアクティビティヒートマップ、プロジェクト別の帰属表示
@@ -195,6 +195,7 @@ brew install xiufengsun/tokentracker/tokentracker
 | **Goose** (Block) | ✅ 自動 | パッシブな SQLite リーダー (`sessions.db`、cumulative deltas) |
 | **Droid** (Factory) | ✅ 自動 | パッシブなセッションリーダー (`~/.factory/sessions/**/settings.json`、cumulative deltas) |
 | **Mimo Code** (mimocode) | ✅ 自動 | パッシブな SQLite リーダー (`~/.local/share/mimocode/mimocode.db`、OpenCode-fork schema; mimo ネイティブのターンのみ集計 — ミラーされた Claude/claude-mem 履歴は除外) |
+| **DuMate** (Baidu) | 自動 | OpenCode SQLite パッシブリーダー (`%APPDATA%/qianfan-desktop-app/qianfan_desk_xdg/*/data/opencode/opencode.db`)。独立した `dumate` ソースで再インストール時のコピーを重複排除。`TOKENTRACKER_DUMATE_HOME` で変更可能。[詳細](docs/dumate.md) |
 | **ZCode** (Z.ai) | ✅ 自動 | パッシブな SQLite リーダー (`~/.zcode/cli/db/db.sqlite`、OpenCode-fork schema; Z.ai/BigModel の GLM ターンのみ集計 — 同梱の Claude/Codex/Gemini サブエージェントは除外) |
 | **Qoder** | ✅ 自動 | パッシブ SQLite リーダー (`Qoder/SharedClientCache/cache/db/local.db`; assistant の `token_info` のみを読み、キャッシュ入力を分離。prompt/response は読みません) と、Qoder ローカルセッションからの Plan Credits / Ultimate 無料呼び出し上限 |
 | **LM Studio** | ✅ 自動 | `~/.lmstudio/server-logs/**/*.log` のパッシブ再帰リーダー。Chat Completions / Responses API の最終応答から ID・モデル・時刻・スカラー `usage` カウンターだけを読み、応答 ID で重複排除します。prompt/response 本文は保持しません。このデータはローカル推論と LM Link（API の限界費用は $0）を対象とし、Bionic Secure Cloud の請求は含みません。 |
@@ -212,7 +213,7 @@ brew install xiufengsun/tokentracker/tokentracker
 > **プラグインや hook を手動でインストールする必要はありますか?** いいえ。`tokentracker`（または `tokentracker init`）が初回実行ですべて処理します:
 > - **Hook ベース**のツール (Claude Code、Codex、AStudio、Gemini、Every Code、**CodeBuddy**、**WorkBuddy**、**Grok Build**) — ツール自身の設定に SessionEnd hook または TOML notify エントリーを書き込みます。
 > - **プラグインベース**のツール (OpenCode、**OpenClaw**) — プラグインは npm パッケージ内に同梱されています。OpenClaw のセッションプラグインは `~/.tokentracker/tracker/openclaw-plugin/openclaw-session-sync/` にあり、OpenClaw 自身の CLI でリンクして有効化したうえで、同期を起動するセッション終了イベントを許可するために `hooks.allowConversationAccess=true` を設定します。ダウンロードもドラッグ＆ドロップも不要です。
-> - **パッシブリーダー** (Cursor、Kiro、Hermes、Kimi Code、Copilot、**Grok Build**、**oh-my-pi**、**pi**、**Craft Agents**、**Reasonix**、**Kilo CLI**、**Kilo Code**、**Roo Code**、**Antigravity**、**Zed Agent**、**Goose**、**Droid**、**Mimo Code**、**ZCode**、**LM Studio**、**Unsloth Studio**、**AnythingLLM Desktop**、**Devin CLI**、**MiniMax Code**、**Claude Science**、**DeepSeek Harness**、**Cline**) — これらのツールには何もインストールしません。ツールがすでに出力しているファイル (SQLite DB、JSONL、OTEL エクスポート、session logs) を読むだけです。Copilot App / CLI の使用量は `~/.copilot/session-store.db` からリクエスト単位で読み取ります。`data.db` は旧データ移行時のベースラインとして一度だけ使い、store が正規ソースになった後は監視専用です。Chat 拡張と旧 CLI は引き続き OTEL を使用し、重複するリクエストは TokenTracker が一度だけ集計します。移行前の混在 App/CLI 履歴でモデルを安全に分離できない残量は、推測したリクエストモデルではなく `github-copilot-legacy` の集計値として保持します。
+> - **パッシブリーダー** (Cursor、Kiro、Hermes、Kimi Code、Copilot、**Grok Build**、**oh-my-pi**、**pi**、**Craft Agents**、**Reasonix**、**Kilo CLI**、**Kilo Code**、**Roo Code**、**Antigravity**、**Zed Agent**、**Goose**、**Droid**、**Mimo Code**、**DuMate**、**ZCode**、**LM Studio**、**Unsloth Studio**、**AnythingLLM Desktop**、**Devin CLI**、**MiniMax Code**、**Claude Science**、**DeepSeek Harness**、**Cline**) — これらのツールには何もインストールしません。ツールがすでに出力しているファイル (SQLite DB、JSONL、OTEL エクスポート、session logs) を読むだけです。Copilot App / CLI の使用量は `~/.copilot/session-store.db` からリクエスト単位で読み取ります。`data.db` は旧データ移行時のベースラインとして一度だけ使い、store が正規ソースになった後は監視専用です。Chat 拡張と旧 CLI は引き続き OTEL を使用し、重複するリクエストは TokenTracker が一度だけ集計します。移行前の混在 App/CLI 履歴でモデルを安全に分離できない残量は、推測したリクエストモデルではなく `github-copilot-legacy` の集計値として保持します。
 > - **Grok Build の推定** — 現在のローカルテレメトリは `updates.jsonl` の累積 `totalTokens` を公開していますが、安定したプロンプト/出力/キャッシュの内訳はありません。`signals.json` は `contextTokensUsed` のスナップショットを使ったフォールバックとして残っています。コールごとの利用詳細が利用可能になるまで、TokenTracker は Grok のコストを推定します。
 >
 > いつでも `tokentracker status` を実行すれば、各統合の状態を確認できます。`skipped` と表示されている場合、`detail` 列にその理由が示されます（例: ツール CLI が `PATH` にない、設定が読めない）。
@@ -229,7 +230,7 @@ brew install xiufengsun/tokentracker/tokentracker
 
 | 機能 | **[TokenTracker](https://github.com/xiufengsun/TokenTracker)** | **[ccusage](https://github.com/ccusage/ccusage)** | **[Tokscale](https://github.com/junhoyeo/tokscale)** |
 |---|:---:|:---:|:---:|
-| **対応 AI ツール数** | **44** | マルチエージェント | マルチエージェント |
+| **対応 AI ツール数** | **45** | マルチエージェント | マルチエージェント |
 | **主なインターフェース** | ネイティブデスクトップアプリ & Web ダッシュボード | ターミナル CLI | ターミナル TUI & CLI |
 | **ローカルファースト解析** | ✅ | ✅ | ✅ |
 | **ネイティブデスクトップアプリ** | ✅ macOS, Windows, Linux | ❌ | ❌ |
@@ -245,7 +246,7 @@ brew install xiufengsun/tokentracker/tokentracker
 
 ```mermaid
 flowchart LR
-    A["AI coding tools<br/>Claude Code · Codex · AStudio · Cursor · Gemini · Kiro<br/>OpenCode · OpenClaw · Every Code · Hermes · Copilot<br/>Kimi · CodeBuddy · WorkBuddy · Grok · Kilo · Roo · Zed · Goose<br/>Antigravity · oh-my-pi · pi · Craft · Droid · Mimo · ZCode · Qoder · AnythingLLM · Claude Science · DeepSeek Harness · TRAE · TRAE Work CN · LM Studio · Unsloth Studio · Devin CLI · MiniMax Code · Cline · Command Code"]
+    A["AI coding tools<br/>Claude Code · Codex · AStudio · Cursor · Gemini · Kiro<br/>OpenCode · OpenClaw · Every Code · Hermes · Copilot<br/>Kimi · CodeBuddy · WorkBuddy · Grok · Kilo · Roo · Zed · Goose<br/>Antigravity · oh-my-pi · pi · Craft · Droid · Mimo · DuMate · ZCode · Qoder · AnythingLLM · Claude Science · DeepSeek Harness · TRAE · TRAE Work CN · LM Studio · Unsloth Studio · Devin CLI · MiniMax Code · Cline · Command Code"]
     A -->|hooks trigger| B[Token Tracker]
     B -->|parse logs<br/>30-min UTC buckets| C[(Local SQLite)]
     C --> D[Web Dashboard]

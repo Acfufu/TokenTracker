@@ -32,6 +32,7 @@ export const AGENT_LOGOS = [
   { id: 26, name: "Goose", provider: "goose" },
   { id: 27, name: "Droid", provider: "droid" },
   { id: 28, name: "Mimo", provider: "mimo" },
+  { id: 45, name: "DuMate", provider: "dumate" },
   { id: 29, name: "ZCode", provider: "zcode" },
   { id: 30, name: "Qoder", provider: "qoder" },
   { id: 31, name: "AnythingLLM", provider: "anythingllm" },

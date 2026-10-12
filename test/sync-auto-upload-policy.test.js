@@ -130,3 +130,37 @@ test("upgrade caps an old thirty-minute success deadline without discarding pend
   assert.equal(x.requests.length, 2);
   assert.equal(x.requests[1].hourly[0].total_tokens, 40);
 });
+
+test("automatic backlog compacts full pending snapshots and drains one window before cooling down", async (t) => {
+  const x = await setup(t);
+  const records = [];
+  for (const tokens of [100, 40, 0]) {
+    for (let index = 0; index < 1500; index += 1) {
+      records.push({ ...x.row(tokens), hour_start: new Date(Date.parse("2026-09-01T00:00:00Z") + index * 30 * 60_000).toISOString() });
+    }
+  }
+  await fs.writeFile(x.queue, records.map((record) => JSON.stringify(record) + "\n").join(""));
+  const before = (await fs.stat(x.queue)).size;
+  assert.ok(before > 1_000_000, "fixture exercises the production backlog threshold");
+  const throttlePath = path.join(x.tracker, "upload.throttle.json");
+  const now = Date.now();
+  await fs.writeFile(throttlePath, JSON.stringify({ lastSuccessMs: now, nextAllowedAtMs: now + 900_000, serverNextAllowedAtMs: now + 900_000 }));
+  assert.equal((await x.run(["--auto"])).code, 0);
+  assert.equal(x.requests.length, 0);
+  assert.equal((await fs.stat(x.queue)).size, before, "a cooldown run cannot compact away the next window's backlog budget");
+  await fs.writeFile(throttlePath, JSON.stringify({ lastSuccessMs: now - 1_000_000, nextAllowedAtMs: now - 100_000 }));
+  assert.equal((await x.run(["--auto"])).code, 0);
+  assert.equal(x.requests.length, 8, "all 1,500 canonical buckets fit this bounded window");
+  assert.equal(new Set(x.requests.map((request) => request.upload_id)).size, 1);
+  const uploaded = x.requests.flatMap((request) => request.hourly);
+  assert.equal(uploaded.length, 1500);
+  assert.ok(uploaded.every((record) => record.total_tokens === 0), "downward and zero corrections replace old snapshots");
+  const after = (await fs.stat(x.queue)).size;
+  assert.ok(after < before / 2);
+  assert.ok(after < 1_000_000);
+  assert.equal((await x.readState()).offset, after);
+  await x.append(x.row(25));
+  assert.equal((await x.run(["--auto"])).code, 0);
+  assert.equal(x.requests.length, 8, "the next automatic run still honors the upload cooldown");
+  assert.equal((await x.readState()).offset, after);
+});

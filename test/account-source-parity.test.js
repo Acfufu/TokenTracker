@@ -97,3 +97,11 @@ test("leaderboard profile preserves Acode as its own provider bucket", () => {
   );
   assert.ok(knownSources?.includes("acode"), "Acode must not collapse into the other provider bucket");
 });
+
+test("leaderboard profile preserves DuMate as its own provider bucket", () => {
+  const knownSources = extractJsSet(
+    readFile("dashboard/edge-patches/tokentracker-leaderboard-profile.ts"),
+    "KNOWN_SOURCES",
+  );
+  assert.ok(knownSources?.includes("dumate"), "DuMate must not collapse into the other provider bucket");
+});

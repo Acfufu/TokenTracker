@@ -365,6 +365,14 @@ function DeepSeekHarnessIcon({ size = 16, className = "" }) {
   );
 }
 
+function DumateIcon({ size = 16, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <path d="M7 5h4a7 7 0 0 1 0 14H7V5Z" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICON_MAP = {
   ACODE: AcodeIcon,
   CLAUDE: ClaudeIcon,
@@ -379,6 +387,7 @@ const PROVIDER_ICON_MAP = {
   DEEPSEEK: DeepSeekHarnessIcon,
   DSH: DeepSeekHarnessIcon,
   DROID: DroidIcon,
+  DUMATE: DumateIcon,
   "EVERY-CODE": CodexIcon,
   GEMINI: GeminiIcon,
   GITHUB: GithubIcon,

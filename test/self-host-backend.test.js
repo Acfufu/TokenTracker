@@ -62,6 +62,28 @@ test("two signed-in devices upload through actual SDK HTTP and private account r
   assert.equal(devices.response.status,200);assert.deepEqual(devices.data.devices,[]);
 });
 
+test("self-host account model breakdown survives the worker text response transport with gzip accepted",async()=>{
+  const owner=await instance.user();const device=await issue(owner,"Text transport");
+  const rows=Array.from({length:80},(_,i)=>({...row(100+i),model:"unpriced-model-"+i}));
+  assert.equal((await upload(device.token,rows)).response.status,200);
+  const response=await fetch(instance.base+"/functions/tokentracker-account-model-breakdown?from=2026-10-01&to=2026-10-01&tz=UTC",{
+    headers:{Authorization:"Bearer "+instance.token(owner),"Accept-Encoding":"gzip"},
+  });
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get("Content-Encoding"),null);
+  const body=await response.text();
+  assert.ok(Buffer.byteLength(body)>=1024);
+  assert.equal(JSON.parse(body).sources[0].models.length,80);
+});
+
+test("self-host installation cascades registered account deletion through machine aliases",async()=>{
+  const owner=await instance.user();await issue(owner,"Deleted account");
+  await instance.db.query("DELETE FROM auth.users WHERE id=$1",[owner]);
+  for(const table of ["tokentracker_cloud_machines","tokentracker_cloud_machine_aliases"])
+    assert.equal((await instance.db.query(`SELECT count(*)::int n FROM ${table} WHERE user_id=$1`,[owner])).rows[0].n,0);
+  await install(instance.db);
+});
+
 test("free self-host policy does not bypass signatures, expiry, token revocation, or account RLS",async()=>{
   const owner=await instance.user();const device=await issue(owner,"Auth boundary");
   const forged=instance.token(owner).slice(0,-3)+"xxx";

@@ -77,6 +77,8 @@ async function buildFunctions(directory) {
       });
     }};
     const output=await build({entryPoints:[source],write:false,bundle:true,format:"iife",globalName:"__selfHostHandler",
+      // The self-host worker serializes responses with text(), including binary gzip.
+      define:slug==="tokentracker-account-model-breakdown"?{CompressionStream:"undefined"}:{},
       platform:"neutral",target:"es2022",plugins:[ownDashboard],logLevel:"silent"});
     if(slug==="tokentracker-billing")runtimeImports.add("node:buffer");
     const imports=Array.from(runtimeImports).sort().map(specifier=>`${JSON.stringify(specifier)}: ${specifier==="node:buffer"

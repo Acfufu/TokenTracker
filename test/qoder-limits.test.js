@@ -633,7 +633,7 @@ test("Qoder limits source contains no browser credential-store access", () => {
   }
 });
 
-test("fetchQoderCnLimits falls back to the qoder.com.cn site and its own cache namespace", async (t) => {
+test("fetchQoderCnLimits falls back to the qoder.cn site and its own cache namespace", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-cn-site-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   let capturedUrl = null;
@@ -666,7 +666,7 @@ test("fetchQoderCnLimits falls back to the qoder.com.cn site and its own cache n
     },
   });
 
-  assert.equal(capturedUrl, "https://qoder.com.cn/api/v2/me/usages/big_model_credits");
+  assert.equal(capturedUrl, "https://qoder.cn/api/v2/me/usages/big_model_credits");
   assert.equal(result.primary_window.remaining_credits, 75);
   assert.equal(result.site, "china");
 
@@ -768,9 +768,9 @@ test("fetchQoderCnLimits stays on the china site even when QODER_SITE points els
   });
 
   // QODER_SITE is an international-flow knob — the CN flow must stay pinned to
-  // qoder.com.cn even if a user set QODER_SITE=qoder.com for the international
+  // qoder.cn even if a user set QODER_SITE=qoder.com for the international
   // install.
-  assert.equal(capturedUrl, "https://qoder.com.cn/api/v2/me/usages/big_model_credits");
+  assert.equal(capturedUrl, "https://qoder.cn/api/v2/me/usages/big_model_credits");
   assert.equal(result.site, "china");
   assert.equal(result.primary_window.remaining_credits, 75);
 });

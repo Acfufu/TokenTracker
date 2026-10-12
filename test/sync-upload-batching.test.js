@@ -252,7 +252,7 @@ test("mixed queue: buckets and states both count toward the batch cap; nextOffse
   assert.equal(second.sessionStates[0].session_id, "s-50");
 });
 
-test("duplicate observations of one session: last-wins within a batch, never duplicated inside one request", async (t) => {
+test("duplicate observations of one session: newer fetch stamp wins, never duplicated inside one request", async (t) => {
   const { dir, queuePath, queueStatePath } = tempQueue("tokentracker-dup-");
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const older = stateRecord("dup-1", { input: 100, verifiedAt: "2027-01-15T00:00:00.000Z" });
@@ -264,5 +264,5 @@ test("duplicate observations of one session: last-wins within a batch, never dup
   assert.equal(ids.length, 2);
   assert.equal(new Set(ids).size, 2, "no duplicate session id inside one request");
   const dup = batch.sessionStates.find((s) => s.session_id === "dup-1");
-  assert.equal(dup.input_tokens, 60, "last-wins: the newer observation is the one delivered");
+  assert.equal(dup.input_tokens, 60, "the newer fetch stamp is the observation delivered");
 });

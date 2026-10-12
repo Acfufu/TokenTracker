@@ -36,6 +36,7 @@ const SOURCE_FILTERS = [
   { id: "all", label: () => copy("usage.filter.source_all") },
   { id: "claude", label: () => "Claude Code" },
   { id: "codex", label: () => "Codex" },
+  { id: "opencode", label: () => "OpenCode" },
   { id: "grok", label: () => "Grok" },
   { id: "zcode", label: () => "ZCode" },
 ];

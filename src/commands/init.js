@@ -13,6 +13,7 @@ const {
   chmod600IfPossible,
 } = require("../lib/fs");
 const { resolveMimoNativeDbPath } = require("../lib/install-resolver");
+const { resolveDumateDbPaths } = require("../lib/dumate");
 const { expandHome } = require("../lib/scan-roots");
 const { prompt, promptHidden } = require("../lib/prompt");
 const {
@@ -147,6 +148,7 @@ const SUPPORTED_PROVIDERS = [
   "Goose",
   "Droid",
   "Mimo",
+  "DuMate",
   "ZCode",
   "Qoder",
   "AnythingLLM Desktop",
@@ -922,6 +924,13 @@ async function applyIntegrationSetup({
     const kiloDbPath = path.join(kiloHome, "kilo.db");
     if (fssync.existsSync(kiloDbPath)) {
       summary.push({ label: "Kilo CLI", status: "detected", detail: "Passive reader (no hook needed)" });
+    }
+  }
+
+  {
+    const dumateDbPaths = resolveDumateDbPaths({ home });
+    if (dumateDbPaths.length > 0) {
+      summary.push({ label: "DuMate", status: "detected", detail: "Passive reader (no hook needed)" });
     }
   }
 

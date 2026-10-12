@@ -28,12 +28,12 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
-const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, coerceEpochMs, normalizeOpencodeModelFields, deriveOpencodeMessageFingerprint } = require("./rollout");
+const { listClaudeProjectFiles, listRolloutFilesDeep, claudeMessageDedupKey, normalizeClaudeUsage, readZcodeDbMessages, coerceEpochMs, normalizeOpencodeModelFields, normalizeOpencodeTokens, deriveOpencodeMessageFingerprint } = require("./rollout");
 const { parseCodexRolloutFile } = require("./codex-rollout-parser");
 const { computeRowCost, getModelPricingInfo } = require("./pricing");
 const { normalizePerformance, mergePerformance, createClaudePerformanceCollector, createCodexPerformanceCollector, createZcodePerformanceCollector } = require("./session-performance");
-const { readSqliteJsonRows } = require("./sqlite-reader");
-const { resolveZcodeNativeDbPath } = require("./install-resolver");
+const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
+const { resolveZcodeNativeDbPath, resolveInstallPaths } = require("./install-resolver");
 const { USD_TICKS_PER_USD, normalizeGrokUsage } = require("./grok-usage");
 const wsl = require("./wsl-probe");
 const {
@@ -81,7 +81,10 @@ const {
 // provider retries from repeated user requests.
 // v20 also invalidates unchanged-stat caches after an observed database lock.
 // v21 retains the request count when several ZCode events share a minute.
-const SIDECAR_VERSION = 21;
+// v22 adds metadata-only OpenCode database sessions.
+// v23 excludes database updates and user records from request durations.
+// v24 keeps OpenCode usage dates at event time and fork history on its ancestor.
+const SIDECAR_VERSION = 24;
 const EDIT_TOOLS = new Set([
   "apply_patch",
   "edit",
@@ -1173,6 +1176,174 @@ async function scanGrokSession(filePath) {
   });
 }
 
+// Project and title metadata stay local. SQL projects only numeric usage and
+// identity fields; user/assistant bodies and tool arguments never enter JS.
+async function readOpencodeSessionInputs(dbPath) {
+  const options = { label: "OpenCode", timeout: 30_000, maxBuffer: 50 * 1024 * 1024, readOnly: true, throwOnReadFailure: true };
+  const query = (sql) => readSqliteJsonRowsAsync(dbPath, sql, options);
+  const tables = new Set((await query("SELECT name FROM sqlite_master WHERE name IN ('session','session_v2','message','session_message')")).map((row) => row.name));
+  const sessionRows = [];
+  for (const table of ["session_v2", "session"]) {
+    if (!tables.has(table)) continue;
+    const columns = new Set((await query(`SELECT name FROM pragma_table_info('${table}')`)).map((row) => row.name));
+    if (!columns.has("id")) continue;
+    const selected = ["id", "parent_id", "directory", "title", "time_created", "time_updated"].filter((column) => columns.has(column));
+    sessionRows.push(...await query(`SELECT ${selected.join(", ")} FROM ${table} ORDER BY id ASC`));
+  }
+  const messages = [];
+  for (const table of ["message", "session_message"]) {
+    if (!tables.has(table)) continue;
+    const role = table === "session_message" ? "type" : "json_extract(data, '$.role')";
+    messages.push(...await query(`SELECT id, session_id, time_created, time_updated, ${role} AS role,
+      CASE WHEN ${role} = 'assistant' THEN json_object(
+        'tokens', json_extract(data, '$.tokens'),
+        'modelID', json_extract(data, '$.modelID'),
+        'providerID', json_extract(data, '$.providerID'),
+        'model', json_extract(data, '$.model'),
+        'time', json_extract(data, '$.time'),
+        'path', json_object('cwd', json_extract(data, '$.path.cwd'))
+      ) END AS metadata
+      FROM ${table} WHERE ${role} IN ('user', 'assistant') ORDER BY time_created ASC, id ASC`));
+  }
+  return { sessionRows, messages };
+}
+
+async function scanOpencodeSessions(dbPaths) {
+  const paths = [...new Set((Array.isArray(dbPaths) ? dbPaths : [dbPaths]).filter(Boolean))];
+  const snapshots = [];
+  const inputs = [];
+  try {
+    for (const dbPath of paths) {
+      let effectivePath = dbPath;
+      if (wsl.isUncPath(dbPath)) {
+        try {
+          const snapshot = wsl.snapshotSqliteDb(dbPath);
+          snapshots.push(snapshot);
+          effectivePath = snapshot.path;
+        } catch { /* Direct read determines whether this mount supports SQLite. */ }
+      }
+      inputs.push(await readOpencodeSessionInputs(effectivePath));
+    }
+    const sessionRows = new Map();
+    const messages = new Map();
+    for (const input of inputs) {
+      for (const row of input.sessionRows) if (!sessionRows.has(row.id)) sessionRows.set(row.id, row);
+      for (const row of input.messages) {
+        const key = `${row.session_id}\0${row.id}`;
+        const previous = messages.get(key);
+        if (!previous || Number(row.time_updated) >= Number(previous.time_updated)) messages.set(key, row);
+      }
+    }
+    const groups = new Map();
+    const ancestors = new Map();
+    const ancestorsOf = (id) => {
+      if (ancestors.has(id)) return ancestors.get(id);
+      const known = [];
+      const seen = new Set([id]);
+      let current = sessionRows.get(id);
+      while (current?.parent_id && sessionRows.has(current.parent_id)) {
+        if (seen.has(current.parent_id)) {
+          ancestors.set(id, []);
+          return [];
+        }
+        seen.add(current.parent_id);
+        known.push(current.parent_id);
+        current = sessionRows.get(current.parent_id);
+      }
+      ancestors.set(id, known);
+      return known;
+    };
+    const sortedMessages = [...messages.values()]
+      .sort((a, b) => Number(a.time_created) - Number(b.time_created))
+      .map((row) => {
+        const data = row.metadata ? JSON.parse(row.metadata) : {};
+        const delta = normalizeOpencodeTokens(data.tokens);
+        const fingerprint = delta && deriveOpencodeMessageFingerprint({ msg: data, totals: delta, source: "opencode" });
+        return { row, data, delta, fingerprint };
+      });
+    // A fork may sort before its original when message creation times tie.
+    // Select a known ancestor before aggregating; unknown/cyclic lineage keeps
+    // the existing first-observed owner and never invents a parent connection.
+    const owners = new Map();
+    for (const { row, fingerprint } of sortedMessages) {
+      if (!fingerprint) continue;
+      const owner = owners.get(fingerprint);
+      if (!owner || ancestorsOf(owner).includes(row.session_id)) owners.set(fingerprint, row.session_id);
+    }
+    for (const { row, data, delta, fingerprint } of sortedMessages) {
+      const sessionId = String(row.session_id || "").trim();
+      if (!sessionId) continue;
+      let group = groups.get(sessionId);
+      if (!group) {
+        group = { bounds: emptyBounds(), tokens: emptyTotals(), models: new Map(), buckets: new Map(), spans: [], turns: 0, calls: 0, cwd: null };
+        groups.set(sessionId, group);
+      }
+      if (delta && delta.total_tokens > 0) {
+        const owner = fingerprint && owners.get(fingerprint);
+        if (owner && owner !== sessionId) continue;
+        const model = normalizeSessionModel(normalizeOpencodeModelFields(data).modelId) || "unknown";
+        addTotals(group.tokens, delta);
+        const usage = group.models.get(model) || { model, ...emptyTotals(), usage_events: 0 };
+        addTotals(usage, delta);
+        usage.usage_events += 1;
+        group.models.set(model, usage);
+        group.calls += 1;
+        const timestampMs = coerceEpochMs(data.time?.completed) || coerceEpochMs(data.time?.created) || coerceEpochMs(row.time_created);
+        if (timestampMs) {
+          const timestamp = new Date(Math.floor(timestampMs / 60_000) * 60_000).toISOString();
+          const key = `${timestamp}\0${model}`;
+          const bucket = group.buckets.get(key) || { timestamp, model, ...emptyTotals(), usage_events: 0 };
+          addTotals(bucket, delta);
+          bucket.usage_events += 1;
+          group.buckets.set(key, bucket);
+        }
+        if (!group.cwd && typeof data.path?.cwd === "string") group.cwd = data.path.cwd.trim() || null;
+      }
+      if (row.role === "user") group.turns += 1;
+      const start = coerceEpochMs(data.time?.created) || coerceEpochMs(row.time_created);
+      // DB time_updated can reflect a migration months after the request.
+      // User records are instants; only an explicit assistant completion proves
+      // execution time. Incomplete requests contribute their start point alone.
+      const completed = row.role === "assistant" ? coerceEpochMs(data.time?.completed) : 0;
+      const end = completed >= start ? completed : start;
+      if (start) updateBounds(group.bounds, new Date(start).toISOString());
+      if (end) updateBounds(group.bounds, new Date(end).toISOString());
+      if (start && end >= start) group.spans.push([start, end]);
+    }
+    const records = [];
+    for (const [sessionId, group] of groups) {
+      const row = sessionRows.get(sessionId) || {};
+      const cwd = typeof row.directory === "string" && row.directory.trim() ? row.directory.trim() : group.cwd;
+      const modelUsage = [...group.models.values()];
+      let activeMs = 0;
+      let interval = null;
+      for (const span of group.spans.sort((a, b) => a[0] - b[0])) {
+        if (!interval) interval = [...span];
+        else if (span[0] <= interval[1] + IDLE_GAP_MS) interval[1] = Math.max(interval[1], span[1]);
+        else { activeMs += interval[1] - interval[0]; interval = [...span]; }
+      }
+      if (interval) activeMs += interval[1] - interval[0];
+      records.push(finalizeRecord({
+        version: SIDECAR_VERSION,
+        session_hash: sessionHash("opencode", sessionId), session_id: sessionId,
+        parent_session_id: typeof row.parent_id === "string" && row.parent_id.trim() ? row.parent_id.trim() : null,
+        title: cleanSessionTitle(row.title), source: "opencode",
+        project_key: projectKey(cwd && cwd.replace(/\\/g, "/"), paths[0]), project_ref: cwd || null,
+        model: modelUsage.length > 1 ? "mixed" : (modelUsage[0]?.model || "unknown"),
+        model_usage: modelUsage, usage_buckets: [...group.buckets.values()],
+        ...group.bounds, active_ms: activeMs, tokens: group.tokens,
+        turns: group.turns, edit_turns: 0, retry_turns: 0,
+        usage_events: group.calls, model_calls: group.calls,
+        usage_precision: group.calls ? "reported" : "unavailable", cost_source: "model_pricing",
+        provenance: { source: "local-session-log", confidence: "observed", retry_confidence: "unavailable", content_retained: false, usage: "opencode-db-metadata" },
+      }));
+    }
+    return records;
+  } finally {
+    for (const snapshot of snapshots) snapshot.cleanup();
+  }
+}
+
 // ZCode (Z.ai's CLI, an OpenCode fork) keeps everything in one SQLite DB at
 // ~/.zcode/cli/db/db.sqlite: a `session` table (id/parent_id/directory/title),
 // a `model_usage` table (per-request counters) and OpenCode's legacy `message`
@@ -1829,7 +2000,13 @@ async function discoverSessionFiles(home, env = process.env, deps = {}) {
     })
     : { native: zcodeExisting(zcodeNativeDbPath), wsl: null };
   const zcode = [...new Set(Object.values(zcodePaths).filter(Boolean))];
-  return { claude, codex: groupCodexFiles([...codex, ...archived]), grok, zcode, incomplete };
+  const opencodeNativeDir = env.OPENCODE_HOME || path.join(env.XDG_DATA_HOME || path.join(home, ".local", "share"), "opencode");
+  const opencodeWslDir = zcodePlatform === "win32" && zcodeProbeWsl && wsl.shouldProbeWsl(env)
+    ? (deps.discoverWslHome || wsl.discoverWslHome)(".local/share/opencode", { env }) : null;
+  const opencodePaths = resolveInstallPaths({ nativeValue: opencodeNativeDir, wslValue: opencodeWslDir }, env, { platform: zcodePlatform });
+  const opencode = [...new Set(Object.values(opencodePaths).filter(Boolean)
+    .map((dir) => path.join(dir, "opencode.db")).filter((dbPath) => fs.existsSync(dbPath)))];
+  return { claude, codex: groupCodexFiles([...codex, ...archived]), grok, zcode, opencode, incomplete };
 }
 
 // Warn once per unreadable directory per process: the dashboard polls this
@@ -1934,7 +2111,7 @@ function analyticsEntryStatKey(source, filePath) {
     const primary = filePaths[0];
     return `${sessionStat}|summary:${sessionFileStatKey(grokSummaryPathFor(primary)) || "missing"}|signals:${sessionFileStatKey(grokSignalsPathFor(primary)) || "missing"}`;
   }
-  if (source === "zcode") {
+  if (source === "zcode" || source === "opencode") {
     // A WAL-mode db can absorb writes without touching the main file's mtime,
     // so the sidecar files are part of the db's identity for cache checks.
     return `${sessionStat}|sidecars:${filePaths.map((filePath) =>
@@ -1967,13 +2144,15 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
   // sidecar and metadata. TTL, signature and per-file reuse must all retry it.
   const incompleteZcodePath = `${metaPath}.zcode-incomplete`;
   const retryZcodeScan = fs.existsSync(incompleteZcodePath);
+  const incompleteOpencodePath = `${metaPath}.opencode-incomplete`;
+  const retryOpencodeScan = fs.existsSync(incompleteOpencodePath);
   let previousMeta = null;
   if (!force) {
     try {
       previousMeta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const checkedAt = Date.parse(previousMeta.checked_at || previousMeta.generated_at || "");
       if (
-        !retryZcodeScan && previousMeta.version === SIDECAR_VERSION &&
+        !retryZcodeScan && !retryOpencodeScan && previousMeta.version === SIDECAR_VERSION &&
         Number.isFinite(checkedAt) &&
         Date.now() - checkedAt < Math.max(0, Number(cacheTtlMs) || 0)
       ) {
@@ -2007,9 +2186,9 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     ...discovered.grok.map(grokSummaryPathFor),
     ...discovered.grok.map(grokSignalsPathFor),
     // db + its WAL sidecars: the trio is one logical file for change detection.
-    ...(discovered.zcode || []).flatMap((dbPath) => [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]),
+    ...[...(discovered.zcode || []), ...(discovered.opencode || [])].flatMap((dbPath) => [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]),
   ]);
-  if (!force && !retryZcodeScan && previousMeta?.version === SIDECAR_VERSION && previousMeta.signature === signature) {
+  if (!force && !retryZcodeScan && !retryOpencodeScan && previousMeta?.version === SIDECAR_VERSION && previousMeta.signature === signature) {
     await writeAtomic(metaPath, `${JSON.stringify({ ...previousMeta, checked_at: new Date().toISOString() })}\n`);
     return readSidecar(sidecarPath);
   }
@@ -2030,26 +2209,29 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     ...discovered.codex.map((filePaths) => ({ source: "codex", filePath: filePaths, scan: scanCodexSession })),
     ...discovered.grok.map((filePath) => ({ source: "grok", filePath, scan: scanGrokSession })),
     ...(discovered.zcode.length ? [{ source: "zcode", filePath: discovered.zcode, scan: scanZcodeSessions }] : []),
+    ...(discovered.opencode.length ? [{ source: "opencode", filePath: discovered.opencode, scan: scanOpencodeSessions }] : []),
   ];
   // Files we could not turn into a row (permission denied, half-written line,
   // vanished mid-scan). Swallowing these silently made sessions disappear with
   // no signal at all; count them so the API can say so.
   let skippedFiles = 0;
   let incompleteZcodeScan = false;
+  let incompleteOpencodeScan = false;
   for (const entry of entries) {
     const cacheKey = sessionFileCacheKey(entry.source, entry.filePath);
     const statKey = analyticsEntryStatKey(entry.source, entry.filePath);
     if (!statKey) {
       skippedFiles += 1;
       if (entry.source === "zcode") incompleteZcodeScan = true;
+      if (entry.source === "opencode") incompleteOpencodeScan = true;
       continue;
     }
     let rows = null;
-    if (!force && !(entry.source === "zcode" && retryZcodeScan) && previousFiles[cacheKey]?.stat_key === statKey) {
-      if (entry.source === "zcode") {
+    if (!force && !(entry.source === "zcode" && retryZcodeScan) && !(entry.source === "opencode" && retryOpencodeScan) && previousFiles[cacheKey]?.stat_key === statKey) {
+      if (entry.source === "zcode" || entry.source === "opencode") {
         // One db scans to many cached rows; recover them all from the previous
         // pass. An empty recovery means the sidecar lost its rows — rescan.
-        const cached = previousRows.filter((row) => row?.source === "zcode");
+        const cached = previousRows.filter((row) => row?.source === entry.source);
         rows = cached.length ? cached : null;
       } else {
         const row = previousRowsByFile.get(cacheKey) || null;
@@ -2065,6 +2247,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
         // pretend it never existed either.
         skippedFiles += 1;
         if (entry.source === "zcode") incompleteZcodeScan = true;
+        if (entry.source === "opencode") incompleteOpencodeScan = true;
         if (!process.env.NODE_TEST_CONTEXT) {
           console.warn(`[session-analytics] skipped ${entry.source} session file: ${error?.message || error}`);
         }
@@ -2078,8 +2261,8 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       // so key each by the db path plus its session id; a bare session id as a
       // separate path element would be path.resolve()d against the process cwd
       // and never match across runs.
-      row._cache_key = entry.source === "zcode" && row.session_id
-        ? `${cacheKey}#${sessionHash("zcode", row.session_id)}`
+      row._cache_key = (entry.source === "zcode" || entry.source === "opencode") && row.session_id
+        ? `${cacheKey}#${sessionHash(entry.source, row.session_id)}`
         : cacheKey;
       sessions.push(row);
     }
@@ -2093,10 +2276,15 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     sessions.push(...readSidecar(sidecarPath).filter((row) =>
       row.source === "zcode" && row.version === SIDECAR_VERSION));
   }
+  if (incompleteOpencodeScan) {
+    await writeAtomic(incompleteOpencodePath, "1\n");
+    sessions.push(...readSidecar(sidecarPath).filter((row) =>
+      row.source === "opencode" && row.version === SIDECAR_VERSION));
+  }
   sessions.sort((a, b) => String(b.ended_at || "").localeCompare(String(a.ended_at || "")));
   // A failed database scan is an incomplete inventory. Keep the last complete
   // snapshot and signature so an unchanged database is retried next build.
-  if (incompleteDirs.length === 0 && !incompleteZcodeScan) {
+  if (incompleteDirs.length === 0 && !incompleteZcodeScan && !incompleteOpencodeScan) {
     const content = sessions.map(serializeSessionRecord).join("\n") + (sessions.length ? "\n" : "");
     await writeAtomic(sidecarPath, content);
     const generatedAt = new Date().toISOString();
@@ -2108,6 +2296,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
       files: nextFiles,
     })}\n`);
     await fsp.rm(incompleteZcodePath, { force: true });
+    await fsp.rm(incompleteOpencodePath, { force: true });
   }
   // Non-enumerable so the array still behaves exactly like a plain row list
   // for every existing caller (map/filter/JSON of the rows is unaffected).
@@ -2285,7 +2474,7 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
       if (key === primaryModel) agg.retries += finite(row.retry_turns);
       byModel.set(key, agg);
     }
-    if ((row.source === "codex" || row.source === "zcode") && row.parent_session_hash) {
+    if ((row.source === "codex" || row.source === "zcode" || row.source === "opencode") && row.parent_session_hash) {
       const name = row.agent_role || row.agent_nickname || "subagent";
       const sub = subagents.get(name) || {
         name,
@@ -2304,7 +2493,7 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
     }
     // Codex and ZCode children are first-class rows. A spawn call in the parent is
     // a control-plane event, not token usage, so do not mix in an estimate.
-    if (row.source === "codex" || row.source === "zcode") continue;
+    if (row.source === "codex" || row.source === "zcode" || row.source === "opencode") continue;
     for (const [name, calls] of Object.entries(row.subagent_types || {})) {
       const sub = subagents.get(name) || { name, calls: 0, sessions: 0, total_tokens: 0, cost_usd: 0 };
       sub.calls += finite(calls);
@@ -2388,6 +2577,7 @@ function resumeCommandFor(source, sessionId) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(id)) return null;
   if (source === "claude") return `claude --resume ${id}`;
   if (source === "codex") return `codex resume ${id}`;
+  if (source === "opencode") return `opencode --session ${id}`;
   // Grok Build: `grok --resume <session-id>` (also accepts a title). The
   // command must still be run from the session's project_ref cwd.
   if (source === "grok") return `grok --resume ${id}`;
@@ -2578,7 +2768,7 @@ function annotateThreadUsage(rows) {
   const identity = (row, id = row.session_id) => `${row.source}\u0000${id}`;
 
   for (const row of rows || []) {
-    if ((row?.source !== "codex" && row?.source !== "zcode") || typeof row.session_id !== "string" || !row.session_id) continue;
+    if ((row?.source !== "codex" && row?.source !== "zcode" && row?.source !== "opencode") || typeof row.session_id !== "string" || !row.session_id) continue;
     const existing = byId.get(identity(row));
     if (existing && existing !== row) {
       existing.parent_link_conflict = true;
@@ -2656,7 +2846,7 @@ function annotateThreadUsage(rows) {
   }
 
   for (const row of rows || []) {
-    const threadAware = (row.source === "codex" || row.source === "zcode")
+    const threadAware = (row.source === "codex" || row.source === "zcode" || row.source === "opencode")
       && typeof row.session_id === "string" && row.session_id;
     row.own_total_tokens = finite(row.total_tokens);
     row.own_cost_usd = finite(row.cost_usd);
@@ -2730,6 +2920,7 @@ module.exports = {
   scanCodexSession,
   scanGrokSession,
   scanZcodeSessions,
+  scanOpencodeSessions,
   buildSessionAnalytics,
   summarizeSessions,
   listSessionsForBrowser,

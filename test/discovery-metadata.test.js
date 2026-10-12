@@ -76,6 +76,8 @@ test("public discovery surfaces describe every supported tool", () => {
     assert.match(source, /Cline/, `${file} preserves the upstream Cline integration`);
     assert.match(source, /MiniMax Code/, `${file} lists MiniMax Code`);
     assert.match(source, /Command Code/, `${file} lists Command Code`);
+    assert.match(source, /DuMate/, `${file} lists DuMate`);
+    assert.match(source, /TOKENTRACKER_DUMATE_HOME/, `${file} documents the DuMate directory override`);
     assert.match(source, limitCountPattern, `${file} rate-limit row carries the current usage-limits provider count`);
   }
 
@@ -87,6 +89,7 @@ test("public discovery surfaces describe every supported tool", () => {
   assert.doesNotMatch(index, /\bAcode\b/);
   assert.match(index, /Devin CLI/);
   assert.match(index, /Cline/);
+  assert.match(index, /DuMate/);
   assert.match(index, /Desktop pet/);
   assert.match(index, /Four desktop widgets/);
   assert.match(index, /Achievements/);
@@ -101,6 +104,7 @@ test("public discovery surfaces describe every supported tool", () => {
   assert.doesNotMatch(llms, /\bAcode\b/);
   assert.match(llms, /Devin CLI/);
   assert.match(llms, /Cline/);
+  assert.match(llms, /DuMate/);
   assert.match(llms, /desktop pet/i);
   assert.match(llms, /four desktop widgets/i);
   assert.match(llms, /achievements/i);
@@ -120,7 +124,7 @@ test("marketing logo wall includes the same supported product integrations", () 
   assert.equal(ids.length, TOOL_COUNT);
   assert.equal(new Set(ids).size, TOOL_COUNT, "merged integrations keep unique carousel IDs");
 
-  for (const provider of ["every-code", "acode", "reasonix", "kilocode", "roocode", "zed", "goose", "droid", "qoder", "anythingllm", "dsh", "prime-agent", "trae-cn", "dots", "lmstudio", "unsloth", "devin", "cline", "minimax-code", "command-code"]) {
+  for (const provider of ["every-code", "acode", "reasonix", "kilocode", "roocode", "zed", "goose", "droid", "qoder", "anythingllm", "dsh", "prime-agent", "trae-cn", "dots", "lmstudio", "unsloth", "devin", "cline", "minimax-code", "command-code", "dumate"]) {
     assert.ok(providers.includes(provider), `logo wall includes ${provider}`);
   }
 });
@@ -145,6 +149,7 @@ test("CLI onboarding advertises the same supported integrations", () => {
   assert.ok(SUPPORTED_PROVIDERS.includes("Cline"));
   assert.ok(SUPPORTED_PROVIDERS.includes("MiniMax Code"));
   assert.ok(SUPPORTED_PROVIDERS.includes("Command Code"));
+  assert.ok(SUPPORTED_PROVIDERS.includes("DuMate"));
 });
 
 test("npm metadata carries the current product hook", () => {
@@ -191,6 +196,7 @@ test("dashboard JSON-LD scripts parse as valid JSON", () => {
   assert.ok(tools.itemListElement.some((item) => item.name === "Cline"));
   assert.ok(tools.itemListElement.some((item) => item.name === "MiniMax Code"));
   assert.ok(tools.itemListElement.some((item) => item.name === "Command Code"));
+  assert.ok(tools.itemListElement.some((item) => item.name === "DuMate"));
   assert.match(supportedClis.acceptedAnswer.text, new RegExp(`${TOOL_COUNT} AI coding tools`));
   assert.match(supportedClis.acceptedAnswer.text, /AStudio/);
   assert.match(supportedClis.acceptedAnswer.text, /Devin CLI/);

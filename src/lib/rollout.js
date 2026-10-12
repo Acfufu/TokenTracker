@@ -5171,7 +5171,7 @@ function isMissingSqliteTableError(error) {
   return messages.some((m) => typeof m === "string" && m.includes("no such table"));
 }
 
-function readOpencodeDbMessagesIncremental(dbPath, previousCursor = null, sqliteOptions = {}, { propagateReadFailure = false } = {}) {
+function readOpencodeDbMessagesIncremental(dbPath, previousCursor = null, sqliteOptions = {}, { propagateReadFailure = false, includeZeroMessage } = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return { messages: [], cursor: null };
 
   const identity = opencodeDbIdentity(dbPath);
@@ -5215,16 +5215,19 @@ function readOpencodeDbMessagesIncremental(dbPath, previousCursor = null, sqlite
         toNonNegativeInt(tokens.reasoning) > 0 ||
         toNonNegativeInt(tokens.cache?.read) > 0 ||
         toNonNegativeInt(tokens.cache?.write) > 0;
-      if (!hasTokens) continue;
-      if (isV2 && typeof row.directory === "string" && row.directory.trim()) {
-        data.path = { ...(typeof data.path === "object" && data.path ? data.path : {}), cwd: row.directory };
-      }
-      out.push({
+      const message = {
         id: row.id || data.id,
         sessionID: row.session_id || data.sessionID,
         timeUpdated: row.time_updated || 0,
         data,
-      });
+      };
+      // Providers can retain zero corrections for previously counted messages.
+      // New empty records remain excluded unless the caller recognizes them.
+      if (!hasTokens && !(typeof includeZeroMessage === "function" && includeZeroMessage(message))) continue;
+      if (isV2 && typeof row.directory === "string" && row.directory.trim()) {
+        data.path = { ...(typeof data.path === "object" && data.path ? data.path : {}), cwd: row.directory };
+      }
+      out.push(message);
     }
   };
 
@@ -5360,8 +5363,8 @@ function readOpencodeDbMessagesIncremental(dbPath, previousCursor = null, sqlite
   }
 }
 
-function readOpencodeDbMessages(dbPath, sqliteOptions = {}, { propagateReadFailure = false } = {}) {
-  return readOpencodeDbMessagesIncremental(dbPath, null, sqliteOptions, { propagateReadFailure }).messages;
+function readOpencodeDbMessages(dbPath, sqliteOptions = {}, { propagateReadFailure = false, includeZeroMessage } = {}) {
+  return readOpencodeDbMessagesIncremental(dbPath, null, sqliteOptions, { propagateReadFailure, includeZeroMessage }).messages;
 }
 
 // mimocode mirrors the user's Claude Code + claude-mem history into its own

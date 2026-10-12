@@ -79,9 +79,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private UpdateStrings _updateStrings = UpdateStrings.For(NativeLocalization.CurrentResolvedLocale);
     private bool _updateBalloonShown;
 
-    // Lightweight UI-thread tick so the tooltip follows a currency change within a
-    // couple of seconds without needing a right-click. Cheap: it only touches the
-    // WebView (to read the currency) once the dashboard has been opened.
+    // Theme and tray state refresh independently of WebView script execution.
     private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 2000 };
     private readonly System.Windows.Forms.Timer _syncTimer = new() { Interval = 5 * 60 * 1000 };
     // Tray apps stay resident for days, so the launch-time update check alone can
@@ -92,12 +90,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         Interval = UpdateCheckIntervalMinutes * 60 * 1000,
     };
-    // WebView currency reads are asynchronous. Timer ticks, menu opens, and
-    // poller callbacks can arrive while one read is still pending; keep one
-    // pass active and request one follow-up pass for the newest stats instead
-    // of stacking ExecuteScript calls on the WebView renderer.
+    // Coalesce timer, menu, and poller callbacks into the latest summary.
     private Task? _summaryRefreshTask;
     private bool _summaryRefreshRequested;
+    private (string Symbol, decimal Rate) _summaryCurrency = Currency.ReadPersisted() ?? ("$", 1m);
+    private int _currencyReadRevision;
 
     public TrayApplicationContext(bool showPetOnLaunch = false)
     {
@@ -670,7 +667,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // it natively so a future cold-launched pet shows the same unit before the
         // dashboard exists. CurrencyChanged only fires once the page is loaded, so the
         // read here is real (never the transient USD default).
-        _dashboard.CurrencyChanged += () => PostToUi(() => { RefreshSummary(); PersistCurrencyFromDashboard(); });
+        _dashboard.CurrencyChanged += () => PostToUi(PersistCurrencyFromDashboard);
         _dashboard.LocaleChanged += () => PostToUi(RefreshLocaleFromDashboard);
         _dashboard.ThemeChanged += () => PostToUi(RefreshThemeFromDashboard);
         _dashboard.PetSettingsRequested += () => PostToUi(PushDashboardPetSettings);
@@ -1046,17 +1043,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task RefreshSummaryOnceAsync()
+    private Task RefreshSummaryOnceAsync()
     {
-        // Convert USD → the dashboard's chosen currency. Reading the currency is a
-        // WebView2 ExecuteScript round-trip — the 2s _refreshTimer would otherwise
-        // poke the WebView forever, even while the window is hidden. Currency
-        // changes originate in the (visible) dashboard and already arrive via
-        // CurrencyChanged → persisted, so a hidden window can safely serve the
-        // natively-cached symbol/rate (which also covers a cold-launched pet).
-        var (symbol, rate) = IsDashboardOpen()
-            ? await _dashboard!.ReadCurrencyAsync()
-            : Currency.ReadPersisted() ?? ("$", 1m);
+        // CurrencyChanged reads once when the value changes or the page loads.
+        var (symbol, rate) = _summaryCurrency;
         // Push currency + language to the pet even before the first usage poll lands, so
         // a freshly launched pet never sits in default USD/English until polling finishes
         // (connection state is owned by OnServerStatusChanged).
@@ -1069,7 +1059,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _petWindow?.ApplyStats(default);
             _summaryItem.Text = $"{_strings.TodayTitle}: {_strings.NoData}";
-            return;
+            return Task.CompletedTask;
         }
 
         // Feed the floating pet the SAME numbers the tray shows (same poller, same moment).
@@ -1084,6 +1074,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // The tray-icon tooltip stays the app name (set once in the ctor). The floating
         // pet now surfaces live usage, so the hover tooltip no longer mirrors the summary.
         RefreshTrayIconForTheme();
+        return Task.CompletedTask;
     }
 
     /// <summary>Cache the dashboard's current currency natively so a cold-launched pet
@@ -1099,8 +1090,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             if (_dashboard is null) return;
-            var (symbol, rate) = await _dashboard.ReadCurrencyAsync();
+            var revision = ++_currencyReadRevision;
+            var currency = await _dashboard.ReadCurrencyAsync();
+            if (revision != _currencyReadRevision || currency is null) return;
+            var (symbol, rate) = currency.Value;
+            _summaryCurrency = (symbol, rate);
             Currency.Persist(symbol, rate);
+            RefreshSummary();
         }
         catch (Exception ex)
         {

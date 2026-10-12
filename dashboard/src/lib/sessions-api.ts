@@ -5,7 +5,7 @@ import { copy } from "./copy";
 
 const SLUG = "tokentracker-sessions";
 
-export type SessionSource = "claude" | "codex" | "grok" | "zcode";
+export type SessionSource = "claude" | "codex" | "grok" | "zcode" | "opencode";
 
 export interface SessionPerformance {
   estimated_output_tokens: number;

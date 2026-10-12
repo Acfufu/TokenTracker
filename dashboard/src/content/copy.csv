@@ -1456,7 +1456,7 @@ sessions.resume.copied,ui,SessionsPage,SessionsPage,resume_copied,"Resume comman
 sessions.resume.copy_failed,ui,SessionsPage,SessionsPage,resume_copy_failed,"Could not copy command",,active
 sessions.resume.unavailable,ui,SessionsPage,SessionsPage,resume_unavailable,"Resume command unavailable",,active
 sessions.empty.title,ui,SessionsPage,SessionsPage,empty_title,"No sessions yet",,active
-sessions.empty.body,ui,SessionsPage,SessionsPage,empty_body,"Run Claude Code, Codex, or Grok on this machine and your sessions will show up here.",,active
+sessions.empty.body,ui,SessionsPage,SessionsPage,empty_body,"Run Claude Code, Codex, OpenCode, Grok, or ZCode on this machine and your sessions will show up here.",,active
 sessions.empty.filtered_title,ui,SessionsPage,SessionsPage,empty_filtered_title,"No matching sessions",,active
 sessions.empty.filtered_body,ui,SessionsPage,SessionsPage,empty_filtered_body,"Try a different search, or widen the date range.",,active
 sessions.col.turns,ui,SessionsPage,SessionsPage,col_turns,"Turns",,active

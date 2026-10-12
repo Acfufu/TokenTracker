@@ -213,9 +213,9 @@ describe("SessionsPage", () => {
   it("loads local sessions and filters them by source and search", async () => {
     getSessions.mockResolvedValue({
       ...response,
-      session_count: 4,
-      returned_count: 4,
-      sessions: [...response.sessions, zcodeRow],
+      session_count: 5,
+      returned_count: 5,
+      sessions: [...response.sessions, zcodeRow, { ...zcodeRow, session_hash: "opencode-row", source: "opencode", title: "Browse OpenCode history", resume_command: "opencode --session ses_opencode", session_id: "ses_opencode" }],
     });
     render(<SessionsPage />);
 
@@ -246,6 +246,10 @@ describe("SessionsPage", () => {
     await chooseSelect("Filter by session source", "Grok");
     expect(screen.queryByText("Review release")).not.toBeInTheDocument();
     expect(screen.getByText("Debug local proxy")).toBeInTheDocument();
+
+    await chooseSelect("Filter by session source", "OpenCode");
+    expect(screen.getByText("Browse OpenCode history")).toBeInTheDocument();
+    expect(screen.queryByText("Debug local proxy")).not.toBeInTheDocument();
 
     await chooseSelect("Filter by session source", "ZCode");
     expect(screen.getByText("Ship zcode support")).toBeInTheDocument();

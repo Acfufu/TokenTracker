@@ -141,10 +141,9 @@ internal sealed class DashboardWindow : Window
             // change (minimise still minimises-to-taskbar) and without Hide(), which broke
             // Win+D restore (the HWND left DWM's minimised-windows list) and tray restore
             // (WindowState stayed Minimized, so ShowDashboard re-fired this handler).
-            _webView.Visibility = (WindowState == WindowState.Minimized)
-                ? Visibility.Collapsed
-                : Visibility.Visible;
+            _ = UpdateWebViewVisibilityAsync();
         };
+        IsVisibleChanged += (_, _) => { _ = UpdateWebViewVisibilityAsync(); };
         KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) CloseOrHideForOAuth(); };
         _server.StatusChanged += OnServerStatusChanged;
     }
@@ -458,6 +457,7 @@ internal sealed class DashboardWindow : Window
                     CompleteNativeOAuth();
                 }
                 await ApplyNativeChromeAsync();
+                await UpdateWebViewVisibilityAsync();
             }
             catch (Exception ex)
             {
@@ -942,6 +942,7 @@ internal sealed class DashboardWindow : Window
     private void BeginNativeOAuth()
     {
         _oauthInFlight = true;
+        _ = UpdateWebViewVisibilityAsync();
         _oauthTimeout?.Cancel();
         _oauthTimeout?.Dispose();
         _oauthTimeout = new CancellationTokenSource();
@@ -996,11 +997,34 @@ internal sealed class DashboardWindow : Window
         _oauthTimeout?.Dispose();
         _oauthTimeout = null;
         if (!IsVisible) CloseOrHideForOAuth();
+        _ = UpdateWebViewVisibilityAsync();
     }
 
     private void ExpireNativeOAuth()
     {
         CompleteNativeOAuth();
+    }
+
+    private async Task UpdateWebViewVisibilityAsync()
+    {
+        var visible = IsVisible && WindowState != WindowState.Minimized;
+        _webView.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!_coreReady || _exiting) return;
+        try
+        {
+            var core = _webView.CoreWebView2;
+            // Hidden OAuth still needs timers and network to finish its exchange.
+            if (visible || _oauthInFlight) core.Resume();
+            else
+            {
+                if (!await core.TrySuspendAsync()) Log("hidden WebView suspension declined");
+                // A tray click or OAuth start can arrive while suspension is pending.
+                if (!_exiting && _coreReady && core == _webView.CoreWebView2 &&
+                    ((IsVisible && WindowState != WindowState.Minimized) || _oauthInFlight))
+                    core.Resume();
+            }
+        }
+        catch (Exception ex) { Log($"WebView visibility update failed: {ex.Message}"); }
     }
 
     private void CloseOrHideForOAuth()
@@ -1084,11 +1108,11 @@ internal sealed class DashboardWindow : Window
 
     /// <summary>
     /// Read the user's currency choice + USD→currency rate from the dashboard's
-    /// localStorage. Returns ("$", 1) until the WebView is ready or on any failure.
+    /// localStorage. Returns null when the WebView cannot supply a current value.
     /// </summary>
-    public async Task<(string Symbol, decimal Rate)> ReadCurrencyAsync()
+    public async Task<(string Symbol, decimal Rate)?> ReadCurrencyAsync()
     {
-        if (!_coreReady) return ("$", 1m);
+        if (!_coreReady) return null;
         try
         {
             var raw = await _webView.CoreWebView2.ExecuteScriptAsync(
@@ -1114,7 +1138,7 @@ internal sealed class DashboardWindow : Window
             }
             return (symbol, rate);
         }
-        catch { return ("$", 1m); }
+        catch { return null; }
     }
 
     /// <summary>

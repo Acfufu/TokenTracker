@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { fetchQoderCnCliLimits } = require("./qoder-cn-cli-limits");
 
 const QODER_SITES = {
   international: {
@@ -16,10 +17,10 @@ const QODER_SITES = {
   },
   china: {
     id: "china",
-    origin: "https://qoder.com.cn",
-    usageUrl: "https://qoder.com.cn/api/v2/me/usages/big_model_credits",
+    origin: "https://qoder.cn",
+    usageUrl: "https://qoder.cn/api/v2/me/usages/big_model_credits",
     activityUrl: "https://openapi.qoder.com.cn/algo/api/v2/activity",
-    domains: new Set(["qoder.com.cn", "www.qoder.com.cn"]),
+    domains: new Set(["qoder.cn", "www.qoder.cn", "qoder.com.cn", "www.qoder.com.cn"]),
   },
 };
 
@@ -670,6 +671,7 @@ async function fetchQoderLimits({
   fetchImpl = fetch,
   rpcRequest = qoderRpcRequest,
   nowMs = Date.now(),
+  cliLimitsRequest,
 } = {}) {
   let rpcUsage = null;
   let rpcAuth = null;
@@ -714,8 +716,22 @@ async function fetchQoderLimits({
     return rpcUsage;
   }
 
-  // Match the Antigravity last-good behavior: once the local service is
-  // unavailable, prefer a bounded disk snapshot before any provider fallback.
+  let cliError = null;
+  if (cliLimitsRequest) {
+    try {
+      const cliUsage = await cliLimitsRequest({ home, env, fetchImpl, normalizeRpcUsage: normalizeQoderRpcUsage });
+      if (cliUsage) {
+        if (activityWindow) cliUsage.secondary_window = activityWindow;
+        writeQoderLimitsCache(cliUsage, { home, nowMs, namespace: cacheNamespace });
+        return cliUsage;
+      }
+    } catch (error) {
+      cliError = error;
+    }
+  }
+
+  // Once native sources are unavailable, prefer a bounded disk snapshot before
+  // the manual-cookie or local-log fallback.
   const cachedLimits = readQoderLimitsCache({ home, nowMs, namespace: cacheNamespace });
   if (cachedLimits) {
     if (activityWindow) cachedLimits.secondary_window = activityWindow;
@@ -738,7 +754,7 @@ async function fetchQoderLimits({
       }]
     : [];
 
-  let lastError = null;
+  let lastError = cliError;
   for (const session of sessions) {
     try {
       const result = await fetchQoderUsage(session.cookieHeader, session.site, fetchImpl);
@@ -800,11 +816,7 @@ async function fetchQoderLimits({
   return { configured: false };
 }
 
-// Qoder CN (国内版) — quota comes from qoder.com.cn and credentials live in the
-// separate QoderCN data directory (its own app install). Same mechanics as the
-// international fetch, but with the china site, the QoderCN data root (own
-// QODER_CN_HOME / QODER_CN_DB_PATH / QODER_CN_LOG_ROOT overrides), and a
-// dedicated cache namespace so the two editions never clobber each other.
+// CN has its own CLI credentials, legacy desktop root and cache namespace.
 function fetchQoderCnLimits(opts = {}) {
   return fetchQoderLimits({
     ...opts,
@@ -813,6 +825,7 @@ function fetchQoderCnLimits(opts = {}) {
     site: QODER_SITES.china,
     sitePinned: true,
     cacheNamespace: "cn",
+    cliLimitsRequest: fetchQoderCnCliLimits,
   });
 }
 
