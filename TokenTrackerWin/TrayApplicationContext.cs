@@ -898,9 +898,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 break;
             case UpdateChecker.CheckOutcome.Failed:
-                MessageBox.Show(
-                    _updateStrings.ErrorMessage, _updateStrings.ErrorTitle,
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                var message = _updateStrings.ErrorMessage;
+                if (_updateChecker.ApiRetryAt is { } retryAt && retryAt > DateTimeOffset.UtcNow)
+                    message += "\n\n" + string.Format(_updateStrings.ApiRetryAtMessage,
+                        retryAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture));
+                message += "\n\n" + _updateStrings.OpenReleasePagePrompt;
+                var openReleasePage = MessageBox.Show(
+                    message, _updateStrings.ErrorTitle,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                if (openReleasePage == DialogResult.Yes)
+                    OpenInBrowser(UpdateReleaseClient.ReleasePageUrl);
                 break;
             // Skipped: nothing to report.
         }

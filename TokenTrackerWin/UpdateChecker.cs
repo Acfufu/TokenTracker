@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
-using System.Text.Json;
 
 namespace TokenTrackerWin;
 
@@ -28,12 +27,10 @@ internal sealed class UpdateChecker
     public enum UpdateState { Idle, Checking, UpdateAvailable, Downloading, Installing }
     public enum CheckOutcome { UpToDate, UpdateAvailable, Failed, Skipped }
 
-    private const string Repo = "xiufengsun/TokenTracker";
-
     // The release uploads a stable, version-less "TokenTracker-Setup.exe"
     // (release-windows.yml renames the versioned Inno output before upload), and
     // the publish job lists that exact name in SHA256SUMS.
-    private const string SetupAssetName = "TokenTracker-Setup.exe";
+    private const string SetupAssetName = UpdateReleaseClient.SetupAssetName;
 
     // External host (github.com): keep the DEFAULT proxy behaviour so CN proxy/VPN
     // users can reach it. The long timeout covers the installer download; the quick
@@ -44,7 +41,6 @@ internal sealed class UpdateChecker
     {
         var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenTracker-Windows-Updater");
-        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return client;
     }
 
@@ -64,6 +60,11 @@ internal sealed class UpdateChecker
     public UpdateState State { get; private set; } = UpdateState.Idle;
     public string? LatestVersion { get; private set; }
     public int ProgressPercent { get; private set; }
+    public DateTimeOffset? ApiRetryAt => _releaseClient.ApiRetryAt;
+
+    private readonly UpdateReleaseClient _releaseClient;
+
+    public UpdateChecker(HttpClient? releaseHttp = null) => _releaseClient = new(releaseHttp ?? Http);
 
     private string? _setupUrl;
     private long _setupSize;
@@ -98,20 +99,15 @@ internal sealed class UpdateChecker
         SetState(UpdateState.Checking);
         try
         {
-            var release = await FetchLatestReleaseAsync();
-            if (release is null)
-            {
-                SetState(UpdateState.Idle);
-                return CheckOutcome.Failed;
-            }
-
-            var latest = release.Value.Version;
-            if (CompareVersions(CurrentVersion, latest) < 0 && release.Value.SetupUrl is not null)
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var release = await _releaseClient.FetchLatestAsync(cts.Token);
+            var latest = release.Version;
+            if (CompareVersions(CurrentVersion, latest) < 0)
             {
                 LatestVersion = latest;
-                _setupUrl = release.Value.SetupUrl;
-                _setupSize = release.Value.SetupSize;
-                _checksumsUrl = release.Value.ChecksumsUrl;
+                _setupUrl = release.SetupUrl;
+                _setupSize = release.SetupSize;
+                _checksumsUrl = release.ChecksumsUrl;
                 SetState(UpdateState.UpdateAvailable);
                 Diag.Log("update", $"update available current={CurrentVersion} latest={latest}");
                 if (silent && AutoUpdatePolicy.IsEnabled())
@@ -191,60 +187,6 @@ internal sealed class UpdateChecker
 
         QuitRequested?.Invoke();
         return true;
-    }
-
-    // ── GitHub ─────────────────────────────────────────────────────────
-
-    private readonly record struct ReleaseInfo(string Version, string? SetupUrl, long SetupSize, string? ChecksumsUrl);
-
-    private static async Task<ReleaseInfo?> FetchLatestReleaseAsync()
-    {
-        var url = $"https://api.github.com/repos/{Repo}/releases/latest";
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        if (!resp.IsSuccessStatusCode)
-        {
-            Diag.Log("update", $"github api status {(int)resp.StatusCode}");
-            return null;
-        }
-
-        await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
-        var root = doc.RootElement;
-
-        var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-        var version = tag.StartsWith('v') ? tag[1..] : tag;
-        if (string.IsNullOrWhiteSpace(version)) return null;
-
-        string? setupUrl = null;
-        long setupSize = 0;
-        string? checksumsUrl = null;
-        if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var asset in assets.EnumerateArray())
-            {
-                var name = asset.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                if (!asset.TryGetProperty("browser_download_url", out var u)) continue;
-
-                // Match both names exactly so a future co-released .exe can't be
-                // picked instead, and keep scanning: the checksum asset may be
-                // listed either side of the installer.
-                if (setupUrl is null && name.Equals(SetupAssetName, StringComparison.OrdinalIgnoreCase))
-                {
-                    setupUrl = u.GetString();
-                    setupSize = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
-                }
-                else if (checksumsUrl is null
-                         && name.Equals(UpdateIntegrity.ChecksumsAssetName, StringComparison.OrdinalIgnoreCase))
-                {
-                    checksumsUrl = u.GetString();
-                }
-
-                if (setupUrl is not null && checksumsUrl is not null) break;
-            }
-        }
-
-        return new ReleaseInfo(version, setupUrl, setupSize, checksumsUrl);
     }
 
     // ── Download ───────────────────────────────────────────────────────
