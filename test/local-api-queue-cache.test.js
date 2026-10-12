@@ -223,7 +223,27 @@ test("a pricing refresh during cooperative aggregation cannot publish mixed revi
     });
     return formatToParts.apply(this, args);
   });
-  const handler = createLocalApiHandler({ queuePath, trackerDataDir: tmp });
+  // Disk completion can legitimately arrive after the entire aggregation on
+  // Windows. Gate the first aggregation yield on the refresh so this test
+  // deterministically exercises a revision change DURING the calculation.
+  const timers = require("node:timers/promises");
+  const yieldToRequests = timers.setImmediate;
+  t.mock.method(timers, "setImmediate", async (...args) => {
+    if (refresh) await refresh;
+    return yieldToRequests(...args);
+  });
+  // The local API captures its yield function at module load; isolate this
+  // factory without replacing the module used by the other tests in this file.
+  const modulePath = require.resolve("../src/lib/local-api");
+  const originalModule = require.cache[modulePath];
+  let isolatedFactory;
+  try {
+    delete require.cache[modulePath];
+    isolatedFactory = require(modulePath).createLocalApiHandler;
+  } finally {
+    require.cache[modulePath] = originalModule;
+  }
+  const handler = isolatedFactory({ queuePath, trackerDataDir: tmp });
   const result = await callEndpoint(handler, "/functions/tokentracker-usage-summary?from=2000-01-01&to=2099-12-31&tz=UTC");
   await refresh;
   assert.equal(Number(result.totals.total_cost_usd), 4_000);
