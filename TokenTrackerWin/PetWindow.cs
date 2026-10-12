@@ -50,6 +50,7 @@ internal sealed class PetWindow : Window
     private long _rageUntil;          // TickCount until which the overheated "error" gag shows
     private bool _rage;
     private bool _coreReady;
+    private WebViewActivity? _activity;
     private bool _contextQueued;
     private readonly DocumentScriptCache _contextCache = new();
     private bool _exiting;
@@ -60,6 +61,7 @@ internal sealed class PetWindow : Window
     private string _tokenUnitSystem = TokenUnits.Current;
     private bool _syncing;
     private JsonNode? _limits;
+    private string? _limitsJson;
     private string _character = CurrentCharacter;
     private string _botColor = CurrentBotColor;
     private UsagePoller.UsageStats _stats;
@@ -160,6 +162,11 @@ internal sealed class PetWindow : Window
         _clickThroughTimer.Tick += (_, _) => ClickThroughTick();
 
         Loaded += OnLoaded;
+        IsVisibleChanged += (_, _) =>
+        {
+            _activity?.Update(IsVisible);
+            if (IsVisible) PushContext();
+        };
         _server.StatusChanged += OnServerStatusChanged;
     }
 
@@ -264,6 +271,9 @@ internal sealed class PetWindow : Window
         _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
 
         var core = _webView.CoreWebView2;
+        _activity = new WebViewActivity(
+            visible => _webView.Visibility = visible ? Visibility.Visible : Visibility.Collapsed,
+            core.Resume, core.TrySuspendAsync, message => Diag.Log("pet", message));
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.AreDevToolsEnabled = false;
@@ -335,9 +345,15 @@ internal sealed class PetWindow : Window
         // Re-push currency + locale after every (re)load so the bubble + quips match
         // the app's unit/language even across navigations.
         core.NavigationStarting += (_, _) => _contextCache.Invalidate();
-        core.NavigationCompleted += (_, _) => { _contextCache.Invalidate(); PushContext(); };
+        core.NavigationCompleted += (_, _) =>
+        {
+            _contextCache.Invalidate();
+            PushContext();
+            _activity?.Update(IsVisible);
+        };
 
         NavigateWhenServerReady();
+        _activity.Update(IsVisible);
     }
 
     private void OnServerStatusChanged(ServerManager.ServerStatus status)
@@ -371,13 +387,17 @@ internal sealed class PetWindow : Window
         _clickThroughTimer.Stop();
         StopEdgeAnimation();
         SetClickThrough(false);
-        Hide();
         _hoverTimer.Stop();
         _lastHover = false;
         PushHover(false);
         _typing = false; // re-evaluated on next show
         _rage = false;
         _typingStreakStart = 0;
+        PushState("Typing", false);
+        PushState("Rage", false);
+        // Reset transient animation state before sleeping the renderer. It must
+        // not reopen in an old typing/hover pose with no new event to clear it.
+        Hide();
     }
 
     private void HoverTick()
@@ -497,7 +517,7 @@ internal sealed class PetWindow : Window
 
     private void PushHover(bool hovering)
     {
-        if (!_coreReady) return;
+        if (!_coreReady || !IsVisible) return;
         try
         {
             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -536,7 +556,7 @@ internal sealed class PetWindow : Window
 
     private void PushBubbleBand()
     {
-        if (!_coreReady) return;
+        if (!_coreReady || !IsVisible) return;
         try
         {
             var value = _bubbleBand.ToString(CultureInfo.InvariantCulture);
@@ -558,7 +578,7 @@ internal sealed class PetWindow : Window
 
     private void PushDragState(string? state)
     {
-        if (!_coreReady) return;
+        if (!_coreReady || !IsVisible) return;
         try
         {
             var value = System.Text.Json.JsonSerializer.Serialize(state);
@@ -622,7 +642,7 @@ internal sealed class PetWindow : Window
     /// <summary>Set a boolean <c>window.__ttPet&lt;name&gt;</c> flag + dispatch <c>pet:&lt;name lower&gt;</c>.</summary>
     private void PushState(string name, bool value)
     {
-        if (!_coreReady) return;
+        if (!_coreReady || !IsVisible) return;
         try
         {
             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -692,9 +712,11 @@ internal sealed class PetWindow : Window
     /// <summary>Push the native usage-limits snapshot without letting raw JSON become executable script.</summary>
     public void ApplyLimits(string? json)
     {
+        if (_limitsJson == json) return;
         try
         {
             var next = string.IsNullOrWhiteSpace(json) ? null : JsonNode.Parse(json);
+            _limitsJson = json;
             if (JsonNode.DeepEquals(_limits, next)) return;
             _limits = next;
         }
@@ -715,6 +737,7 @@ internal sealed class PetWindow : Window
     /// </summary>
     public void ApplyStats(UsagePoller.UsageStats stats)
     {
+        if (_stats.Equals(stats)) return;
         var prevTokens = _stats.TodayTokens;
         var prevCost = _stats.TodayCostUsd;
         _stats = stats;
@@ -722,7 +745,7 @@ internal sealed class PetWindow : Window
         {
             long tokensDelta = stats.TodayTokens - prevTokens;
             decimal costDelta = stats.TodayCostUsd - prevCost;
-            if (_coreReady)
+            if (_coreReady && IsVisible)
             {
                 var modelName = "AI Model";
                 var costDeltaJs = costDelta.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -743,12 +766,12 @@ internal sealed class PetWindow : Window
 
     private void PushContext()
     {
-        if (!_coreReady || _contextQueued || _exiting) return;
+        if (!_coreReady || !IsVisible || _contextQueued || _exiting) return;
         _contextQueued = true;
         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
         {
             _contextQueued = false;
-            if (_coreReady && !_exiting) _ = FlushContextAsync();
+            if (_coreReady && IsVisible && !_exiting) _ = FlushContextAsync();
         }));
     }
 
@@ -932,6 +955,7 @@ internal sealed class PetWindow : Window
         _hoverTimer.Stop();
         _clickThroughTimer.Stop();
         _server.StatusChanged -= OnServerStatusChanged;
+        _activity?.Dispose();
         base.OnClosing(e);
     }
 

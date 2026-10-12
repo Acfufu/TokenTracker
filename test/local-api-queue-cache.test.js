@@ -55,11 +55,19 @@ test("local usage endpoints reuse one parsed queue until the file changes", asyn
   await fs.promises.writeFile(queuePath, `${JSON.stringify(queueRow(100))}\n`);
   const handler = createLocalApiHandler({ queuePath });
 
-  const originalReadFileSync = fs.readFileSync;
-  let queueReads = 0;
-  fs.readFileSync = function countedRead(filePath, ...args) {
-    if (path.resolve(String(filePath)) === path.resolve(queuePath)) queueReads += 1;
-    return originalReadFileSync.call(this, filePath, ...args);
+  const originalOpen = fs.promises.open;
+  let queueBytes = 0;
+  fs.promises.open = async function countedOpen(filePath, ...args) {
+    const file = await originalOpen.call(this, filePath, ...args);
+    if (path.resolve(String(filePath)) === path.resolve(queuePath)) {
+      const read = file.read.bind(file);
+      file.read = async (...readArgs) => {
+        const result = await read(...readArgs);
+        queueBytes += result.bytesRead;
+        return result;
+      };
+    }
+    return file;
   };
 
   try {
@@ -73,7 +81,9 @@ test("local usage endpoints reuse one parsed queue until the file changes", asyn
     );
     assert.equal(summary.totals.total_tokens, 100);
     assert.equal(daily.data[0].total_tokens, 100);
-    assert.equal(queueReads, 1);
+    const coldReadBytes = queueBytes;
+    await callEndpoint(handler, "/functions/tokentracker-usage-summary?tz=UTC");
+    assert.equal(queueBytes, coldReadBytes, "unchanged snapshots do not reread queue bytes");
 
     // Appending invalidates the signature, but the queue is append-only, so
     // the refresh reads just the new tail instead of the whole file.
@@ -83,9 +93,9 @@ test("local usage endpoints reuse one parsed queue until the file changes", asyn
       "/functions/tokentracker-usage-summary?from=2026-07-17&to=2026-07-17&tz=UTC",
     );
     assert.equal(refreshed.totals.total_tokens, 250);
-    assert.equal(queueReads, 1);
+    assert.ok(queueBytes > coldReadBytes, "append reads the new tail");
   } finally {
-    fs.readFileSync = originalReadFileSync;
+    fs.promises.open = originalOpen;
     await fs.promises.rm(tmp, { recursive: true, force: true });
   }
 });
@@ -155,4 +165,66 @@ test("pricing revision invalidates cached daily cost without rereading the queue
     pricing.resetPricingForTests();
     await fs.promises.rm(tmp, { recursive: true, force: true });
   }
+});
+
+test("large daily aggregations share work and allow HTTP requests while computing", async (t) => {
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tt-daily-responsive-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+  const queuePath = path.join(tmp, "queue.jsonl");
+  const rows = Array.from({ length: 24_000 }, (_, i) => ({
+    ...queueRow(100),
+    hour_start: new Date(Date.parse("2026-07-17T00:00:00Z") - i * 1_800_000).toISOString(),
+  }));
+  await fs.promises.writeFile(queuePath, rows.map(JSON.stringify).join("\n") + "\n");
+  const handler = createLocalApiHandler({ queuePath, trackerDataDir: tmp });
+  // Warm queue bytes, but leave Shanghai's daily aggregation cold.
+  await callEndpoint(handler, "/functions/tokentracker-usage-summary?from=2000-01-01&to=2099-12-31&tz=UTC");
+  const formatToParts = Intl.DateTimeFormat.prototype.formatToParts;
+  let processed = 0;
+  t.mock.method(Intl.DateTimeFormat.prototype, "formatToParts", function (...args) {
+    processed++;
+    return formatToParts.apply(this, args);
+  });
+  const http = require("node:http");
+  const server = http.createServer((req, res) => res.end("healthy"));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const range = "from=2000-01-01&to=2099-12-31&tz=Asia%2FShanghai";
+  let completed = false;
+  const summary = callEndpoint(handler, `/functions/tokentracker-usage-summary?${range}`).then((result) => { completed = true; return result; });
+  while (!processed) await new Promise((resolve) => setImmediate(resolve));
+  const daily = callEndpoint(handler, `/functions/tokentracker-usage-daily?${range}`);
+  assert.equal(await fetch(`http://127.0.0.1:${server.address().port}`).then((res) => res.text()), "healthy");
+  assert.equal(completed, false, "HTTP responds during aggregation, after rows have started processing");
+  const [result, dailyResult] = await Promise.all([summary, daily]);
+  assert.equal(result.totals.total_tokens, 2_400_000);
+  assert.equal(dailyResult.data.reduce((sum, row) => sum + row.total_tokens, 0), 2_400_000);
+  assert.ok(processed < 24_100, "concurrent endpoints share the same daily aggregation");
+});
+
+test("a pricing refresh during cooperative aggregation cannot publish mixed revisions", async (t) => {
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tt-daily-price-race-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+  const queuePath = path.join(tmp, "queue.jsonl");
+  const rows = Array.from({ length: 2_000 }, (_, i) => ({
+    ...queueRow(1_000_000, { source: "revision-source", model: "aggregation-revision-only-model" }),
+    input_tokens: 1_000_000, output_tokens: 0,
+    hour_start: new Date(Date.parse("2026-07-17T00:00:00Z") - i * 1_800_000).toISOString(),
+  }));
+  await fs.promises.writeFile(queuePath, rows.map(JSON.stringify).join("\n") + "\n");
+  pricing.resetPricingForTests();
+  t.after(() => pricing.resetPricingForTests());
+  let refresh;
+  const formatToParts = Intl.DateTimeFormat.prototype.formatToParts;
+  t.mock.method(Intl.DateTimeFormat.prototype, "formatToParts", function (...args) {
+    refresh ||= pricing.ensurePricingLoaded({
+      cachePath: path.join(tmp, "pricing.json"),
+      fetchImpl: async () => ({ "aggregation-revision-only-model": { input_cost_per_token: 2e-6, output_cost_per_token: 0 } }),
+    });
+    return formatToParts.apply(this, args);
+  });
+  const handler = createLocalApiHandler({ queuePath, trackerDataDir: tmp });
+  const result = await callEndpoint(handler, "/functions/tokentracker-usage-summary?from=2000-01-01&to=2099-12-31&tz=UTC");
+  await refresh;
+  assert.equal(Number(result.totals.total_cost_usd), 4_000);
 });
