@@ -9996,6 +9996,131 @@ test("parseOmpIncremental parses a single session and queues correct 30-min buck
   }
 });
 
+test("parseOmpIncremental skips an oversized record and still counts usage after it", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-omp-"));
+  try {
+    const sessionsDir = path.join(tmp, "sessions", "--test--");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const filePath = path.join(sessionsDir, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const maxRecordBytes = 1024;
+    const ts = Date.UTC(2026, 9, 1, 8, 10);
+    const toolResult = JSON.stringify({
+      type: "message",
+      id: "big00001",
+      message: {
+        role: "toolResult",
+        toolName: "eval",
+        content: [{ type: "text", text: "x".repeat(4096) }],
+      },
+    });
+    const assistant = buildOmpAssistantLine({
+      id: "use00001",
+      model: "claude-sonnet-4-5",
+      input: 100,
+      output: 20,
+      timestamp: ts,
+      totalTokens: 120,
+    });
+    assert.ok(Buffer.byteLength(toolResult, "utf8") > maxRecordBytes);
+    assert.ok(Buffer.byteLength(assistant, "utf8") <= maxRecordBytes);
+    await fs.writeFile(
+      filePath,
+      [buildOmpSessionHeader(), toolResult, assistant].join("\n") + "\n",
+      "utf8",
+    );
+
+    const first = await parseOmpIncremental({
+      sessionFiles: [filePath],
+      cursors,
+      queuePath,
+      maxRecordBytes,
+    });
+    assert.equal(first.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].source, "omp");
+    assert.equal(queued[0].model, "claude-sonnet-4-5");
+    assert.equal(queued[0].input_tokens, 100);
+    assert.equal(queued[0].output_tokens, 20);
+    assert.equal(queued[0].total_tokens, 120);
+    assert.equal(queued[0].hour_start, "2026-10-01T08:00:00.000Z");
+    const fileSize = (await fs.stat(filePath)).size;
+    assert.equal(cursors.omp.fileOffsets[filePath].size, fileSize);
+
+    const second = await parseOmpIncremental({
+      sessionFiles: [filePath],
+      cursors,
+      queuePath,
+      maxRecordBytes,
+    });
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal((await readJsonLines(queuePath)).length, 1);
+    assert.equal(cursors.omp.fileOffsets[filePath].size, fileSize);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseOmpIncremental retries a half-written final record", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-omp-"));
+  try {
+    const sessionsDir = path.join(tmp, "sessions", "--test--");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const filePath = path.join(sessionsDir, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const ts = Date.UTC(2026, 9, 1, 8, 10);
+    const assistantA = buildOmpAssistantLine({
+      id: "use0000a",
+      model: "claude-sonnet-4-5",
+      input: 100,
+      output: 20,
+      timestamp: ts,
+      totalTokens: 120,
+    });
+    const assistantB = buildOmpAssistantLine({
+      id: "use0000b",
+      model: "claude-sonnet-4-5",
+      input: 50,
+      output: 10,
+      timestamp: ts + 60_000,
+      totalTokens: 60,
+    });
+    const completePrefix = [buildOmpSessionHeader(), assistantA].join("\n") + "\n";
+    const splitAt = Math.floor(assistantB.length / 2);
+    const partialB = assistantB.slice(0, splitAt);
+    assert.throws(() => JSON.parse(partialB), SyntaxError);
+    await fs.writeFile(filePath, completePrefix + partialB, "utf8");
+
+    const first = await parseOmpIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(first.eventsAggregated, 1);
+    assert.equal(cursors.omp.fileOffsets[filePath].size, Buffer.byteLength(completePrefix, "utf8"));
+    const queuedFirst = await readJsonLines(queuePath);
+    assert.equal(queuedFirst.length, 1);
+    assert.equal(queuedFirst[0].input_tokens, 100);
+    assert.equal(queuedFirst[0].output_tokens, 20);
+    assert.equal(queuedFirst[0].total_tokens, 120);
+    assert.equal(queuedFirst[0].hour_start, "2026-10-01T08:00:00.000Z");
+
+    await fs.appendFile(filePath, assistantB.slice(splitAt) + "\n", "utf8");
+    const second = await parseOmpIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(second.eventsAggregated, 1);
+    assert.equal(cursors.omp.fileOffsets[filePath].size, (await fs.stat(filePath)).size);
+    const queuedSecond = await readJsonLines(queuePath);
+    const latest = queuedSecond.at(-1);
+    assert.equal(latest.source, "omp");
+    assert.equal(latest.model, "claude-sonnet-4-5");
+    assert.equal(latest.hour_start, "2026-10-01T08:00:00.000Z");
+    assert.equal(latest.input_tokens, 150);
+    assert.equal(latest.output_tokens, 30);
+    assert.equal(latest.total_tokens, 180);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseOmpIncremental dedupes by entry id across two runs", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-omp-"));
   try {
