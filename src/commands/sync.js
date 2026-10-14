@@ -1799,8 +1799,12 @@ async function cmdSync(argv, context = {}) {
         // Steady-state cost: unchanged dbs (size+mtimeMs recorded in zcodeSandboxDbStats, independent of the
         // zcodeSandbox message index) are skipped directly — sub-ledgers are static after review archiving, so backtests
         // read each one only once.
+        // Both resolved slots, not `native || wsl`: outside win32 TOKENTRACKER_WSL_MODE=both upstream's
+        // resolveZcodeInstallPaths collapses ZCode to a single owning ledger (pin ⇒ wsl = null ⇒ one path,
+        // identical to before), but under `both` native and WSL are both live — and a sandbox is only
+        // reachable through the project directories the ledger that owns it knows.
         try {
-          const sandboxDbs = discoverZcodeSandboxDbs(zcodePaths.native || zcodePaths.wsl);
+          const sandboxDbs = discoverZcodeSandboxDbs([zcodePaths.native, zcodePaths.wsl]);
           const sandboxStats = cursors.zcodeSandboxDbStats && typeof cursors.zcodeSandboxDbStats === "object" ? cursors.zcodeSandboxDbStats : {};
           const nextStats = {};
           for (const sandboxDb of sandboxDbs) {

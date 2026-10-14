@@ -11,7 +11,7 @@ const fsSync = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 
-const { discoverZcodeSandboxDbs, readZcodeDbMessages, parseOpencodeDbIncremental } = require("../src/lib/rollout");
+const { discoverZcodeSandboxDbs, readZcodeDbMessages, parseOpencodeDbIncremental, resolveZcodeInstallPaths } = require("../src/lib/rollout");
 
 const HAS_SQLITE3 = spawnSync("sqlite3", ["--version"], { timeout: 5_000 }).status === 0;
 const sql = (db, statement) => spawnSync("sqlite3", [db, statement], { encoding: "utf8", timeout: 10_000 });
@@ -121,6 +121,93 @@ test("ingestion: parseOpencodeDbIncremental (zcodeSandbox namespace) → queue r
       dbMessages: readZcodeDbMessages(sandboxDb), dbPath: sandboxDb, cursors, queuePath, source: "zcode", cursorKey: "zcodeSandbox",
     });
     assert.equal(second.eventsAggregated, 0, "same sessionId second read not re-accumulated (dedup semantics)");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// A host ledger that is also schema-valid: only the exclusion set can keep it out of the sandbox result.
+async function makeHostDb(dir, projectDirs) {
+  const dbDir = path.join(dir, ".zcode", "cli", "db");
+  await fs.mkdir(dbDir, { recursive: true });
+  const db = path.join(dbDir, "db.sqlite");
+  const values = projectDirs.map((d, i) => `('host-sess-${i}', '${d.replace(/'/g, "''")}')`).join(", ");
+  const r = sql(db, `${MU_SCHEMA} INSERT INTO session VALUES ${values};`);
+  assert.equal(r.status, 0, `host ledger write failed: ${r.stderr}`);
+  return db;
+}
+
+const rp = (p) => fsSync.realpathSync(p);
+const sortedRp = (list) => list.map(rp).sort();
+
+test("discovery: several host ledgers union their session roots; a root known to two ledgers is collected once", { skip: !HAS_SQLITE3 && "sqlite3 missing" }, async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-zcode-sandbox-multi-"));
+  try {
+    const projectA = path.join(tmp, "projectA");
+    const projectB = path.join(tmp, "projectB");
+    await fs.mkdir(projectA, { recursive: true });
+    await fs.mkdir(projectB, { recursive: true });
+    const hostA = await makeHostDb(path.join(tmp, "hostA"), [projectA]);
+    const hostB = await makeHostDb(path.join(tmp, "hostB"), [projectB]);
+    const sbA = await makeSandboxDb(path.join(projectA, ".lazyzcode", "review", "a.a1.r1"));
+    const sbB = await makeSandboxDb(path.join(projectB, ".lazyzcode", "review", "b.a1.r1"));
+
+    assert.deepEqual(sortedRp(discoverZcodeSandboxDbs(hostA)), [rp(sbA)], "one ledger only reaches the projects its own session table knows");
+    assert.deepEqual(sortedRp(discoverZcodeSandboxDbs([hostA, hostB])), [rp(sbA), rp(sbB)].sort(), "disjoint ledgers contribute both installs");
+
+    const hostC = await makeHostDb(path.join(tmp, "hostC"), [projectA]);
+    assert.deepEqual(sortedRp(discoverZcodeSandboxDbs([hostA, hostC])), [rp(sbA)], "a root shared by two ledgers must not double-collect");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("discovery: a host ledger parked under a .lazyzcode/**/home path is never re-ingested as a sandbox", { skip: !HAS_SQLITE3 && "sqlite3 missing" }, async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-zcode-sandbox-hostexcl-"));
+  try {
+    const projectA = path.join(tmp, "projectA");
+    const projectB = path.join(tmp, "projectB");
+    await fs.mkdir(projectA, { recursive: true });
+    await fs.mkdir(projectB, { recursive: true });
+    // hostB sits exactly where a sub-ledger would, and carries the same schema — the exclusion set is
+    // the only thing separating it from a sandbox. The two namespaces ("zcode" / "zcodeSandbox") do not
+    // dedupe each other, so emitting it here would ingest the whole host ledger a second time.
+    const hostB = await makeHostDb(path.join(projectA, ".lazyzcode", "review", "hb", "home"), [projectB]);
+    const hostA = await makeHostDb(path.join(tmp, "hostA"), [projectA]);
+    const sbA = await makeSandboxDb(path.join(projectA, ".lazyzcode", "review", "real.a1.r1"));
+    const sbB = await makeSandboxDb(path.join(projectB, ".lazyzcode", "review", "b.a1.r1"));
+
+    const found = sortedRp(discoverZcodeSandboxDbs([hostA, hostB]));
+    assert.ok(!found.includes(rp(hostB)), "host ledger must not appear among sandbox sub-ledgers");
+    assert.deepEqual(found, [rp(sbA), rp(sbB)].sort());
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("discovery: win32 TOKENTRACKER_WSL_MODE=both keeps two live ledgers — `native || wsl` would lose the second install", { skip: !HAS_SQLITE3 && "sqlite3 missing" }, async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-zcode-sandbox-both-"));
+  try {
+    const projectA = path.join(tmp, "projectA");
+    const projectB = path.join(tmp, "projectB");
+    await fs.mkdir(projectA, { recursive: true });
+    await fs.mkdir(projectB, { recursive: true });
+    const nativeHost = await makeHostDb(path.join(tmp, "native"), [projectA]);
+    const wslHost = await makeHostDb(path.join(tmp, "wslhome"), [projectB]);
+    const sbA = await makeSandboxDb(path.join(projectA, ".lazyzcode", "review", "a.a1.r1"));
+    const sbB = await makeSandboxDb(path.join(projectB, ".lazyzcode", "review", "b.a1.r1"));
+
+    // Constructed rather than probed: macOS cannot reach this mode, so the resolver is driven with
+    // injected win32 deps to keep the dual-install surface under real coverage.
+    const paths = resolveZcodeInstallPaths({ nativeValue: nativeHost, wslValue: wslHost }, { TOKENTRACKER_WSL_MODE: "both" }, { platform: "win32" });
+    assert.ok(paths.native && paths.wsl, "both mode must leave both ledgers live, otherwise this test proves nothing");
+
+    assert.deepEqual(sortedRp(discoverZcodeSandboxDbs(paths.native || paths.wsl)), [rp(sbA)], "the pre-fix single-slot call covered only the native install");
+    assert.deepEqual(
+      sortedRp(discoverZcodeSandboxDbs([paths.native, paths.wsl])),
+      [rp(sbA), rp(sbB)].sort(),
+      "passing both resolved slots recovers the WSL install's sandboxes",
+    );
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

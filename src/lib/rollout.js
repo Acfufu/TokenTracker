@@ -5782,27 +5782,38 @@ const ZCODE_SANDBOX_PRUNED_DIRS = new Set(["node_modules", ".git", "dist", "out"
 const ZCODE_SANDBOX_NESTED_MAX_DEPTH = 12;
 const ZCODE_SANDBOX_NESTED_MAX_VISITS = 20000;
 
-function discoverZcodeSandboxDbs(hostDbPath, sqliteOptions = {}) {
-  if (!hostDbPath || !fssync.existsSync(hostDbPath)) return [];
-  let hostRealPath = null;
-  try {
-    hostRealPath = fssync.realpathSync(hostDbPath);
-  } catch (_error) {
-    return [];
+function discoverZcodeSandboxDbs(hostDbPaths, sqliteOptions = {}) {
+  // One host ledger or several: under win32 TOKENTRACKER_WSL_MODE=both the native and the WSL install
+  // both hold live session tables, and a sandbox is only reachable through the project directories its
+  // own host ledger knows. Roots union across every readable ledger, and every ledger stays in the
+  // exclusion set below — the "zcode" and "zcodeSandbox" cursor namespaces do not dedupe each other, so
+  // a host db that itself sits under a .lazyzcode tree would otherwise be ingested twice.
+  const hostCandidates = (Array.isArray(hostDbPaths) ? hostDbPaths : [hostDbPaths]).filter(Boolean);
+  const hostRealPaths = new Set();
+  const rootSet = new Set();
+  for (const hostDbPath of hostCandidates) {
+    if (!fssync.existsSync(hostDbPath)) continue;
+    try {
+      hostRealPaths.add(fssync.realpathSync(hostDbPath));
+    } catch (_error) {
+      continue;
+    }
+    let rows = [];
+    try {
+      rows = readSqliteJsonRows(
+        hostDbPath,
+        "SELECT DISTINCT directory FROM session WHERE directory IS NOT NULL AND trim(directory) != ''",
+        { label: "ZCode", timeout: 10_000, maxBuffer: 8 * 1024 * 1024, ...sqliteOptions },
+      );
+    } catch (_error) {
+      continue; // Host ledger unreadable (no sqlite3 CLI, transient lock): fail-soft like the rest of this provider's parse.
+    }
+    for (const row of rows) {
+      const dir = String(row?.directory || "").trim();
+      if (dir && fssync.existsSync(dir)) rootSet.add(dir);
+    }
   }
-  let rows = [];
-  try {
-    rows = readSqliteJsonRows(
-      hostDbPath,
-      "SELECT DISTINCT directory FROM session WHERE directory IS NOT NULL AND trim(directory) != ''",
-      { label: "ZCode", timeout: 10_000, maxBuffer: 8 * 1024 * 1024, ...sqliteOptions },
-    );
-  } catch (_error) {
-    return []; // Host ledger unreadable (no sqlite3 CLI, transient lock): fail-soft like the rest of this provider's parse.
-  }
-  const projectRoots = [
-    ...new Set(rows.map((row) => String(row?.directory || "").trim()).filter((dir) => dir && fssync.existsSync(dir))),
-  ];
+  const projectRoots = [...rootSet];
   const found = [];
   // Cap counts UNIQUE candidates: session roots nest (a parent root's nested search and the child
   // root's own top-level probe reach the same .lazyzcode), so counting raw hits would let
@@ -5880,7 +5891,7 @@ function discoverZcodeSandboxDbs(hostDbPath, sqliteOptions = {}) {
     } catch (_error) {
       continue;
     }
-    if (real === hostRealPath || seen.has(real)) continue;
+    if (hostRealPaths.has(real) || seen.has(real)) continue;
     if (!hasZcodeNativeUsageSchema(real, sqliteOptions)) continue; // Incomplete schema (empty/snapshotted db) → excluded
     seen.add(real);
     result.push(real);
