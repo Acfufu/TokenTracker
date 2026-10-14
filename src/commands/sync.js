@@ -5020,6 +5020,11 @@ async function repairZcodeUsageMigration({
     }
   }
   delete cursors.zcode;
+  // Sandbox sub-ledgers attribute through `zcode|` buckets too, so the wipe above already dropped their
+  // contribution. Clearing the namespaces alongside is what makes them replay: the size+mtime fingerprint
+  // map alone would let every unchanged sub-ledger skip forever, stranding the removed rows.
+  delete cursors.zcodeSandbox;
+  delete cursors.zcodeSandboxDbStats;
 
   if (mainRepair.removed > 0) {
     await resetUploadOffsetForZcodeRepair(queueStatePath, queueStateNote);

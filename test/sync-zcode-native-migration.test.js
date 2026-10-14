@@ -144,3 +144,35 @@ test("inclusive-token ZCode migration retracts prior totals and resets replay on
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
+
+test("ZCode usage repair clears the sandbox namespaces so their buckets can replay", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-zcode-sandbox-repair-"));
+  try {
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const queueStatePath = path.join(tmp, "queue.state.json");
+    const hour = "2026-10-02T09:00:00Z";
+    await fs.writeFile(queuePath, `${row("zcode", "deepseek/deepseek-v4.1-flash", hour, 1000)}\n`);
+    await fs.writeFile(queueStatePath, JSON.stringify({ offset: 10 }));
+    const cursors = {
+      zcode: { messages: { "host|row": { lastTotals: { total_tokens: 20 } } } },
+      // Sandbox rows queue under `zcode|` buckets, so the wipe below already discards their contribution.
+      zcodeSandbox: { messages: { "sandbox|row": { lastTotals: { total_tokens: 1000 } } } },
+      zcodeSandboxDbStats: { "/p/.lazyzcode/review/a.a1.r1/home/.zcode/cli/db/db.sqlite": "4096:1759363200000" },
+      hourly: {
+        buckets: { [`zcode|deepseek/deepseek-v4.1-flash|${hour}`]: { totals: { total_tokens: 1000 } } },
+        groupQueued: {},
+      },
+      migrations: {},
+    };
+
+    assert.equal(await repairZcodeInclusiveTokenMigration({ cursors, queuePath, queueStatePath }), true);
+    assert.equal(cursors.zcode, undefined);
+    assert.equal("zcodeSandbox" in cursors, false,
+      "sandbox message index must reset too, or replayed rows dedupe against the surviving index");
+    assert.equal("zcodeSandboxDbStats" in cursors, false,
+      "the size+mtime map must reset too, or every unchanged sub-ledger skips forever and the cleared bucket never returns");
+    assert.deepEqual(Object.keys(cursors.hourly.buckets), [], "zcode buckets dropped with the repair");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
