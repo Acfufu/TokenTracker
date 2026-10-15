@@ -191,8 +191,10 @@ will not complete until 17680 is free again.
 
 The AppImage registers a per-user `.desktop` handler for the
 `tokentracker://` OAuth callback on first launch and refreshes it whenever the
-AppImage moves. This requires `xdg-mime` (normally provided by `xdg-utils`). The
-Arch package installs the equivalent handler system-wide.
+AppImage moves. This requires `xdg-mime` (normally provided by `xdg-utils`), and
+also refreshes the desktop database with `update-desktop-database`
+(`desktop-file-utils`), because portals and app choosers only offer handlers
+listed there. The Arch package installs the equivalent handler system-wide.
 
 ## Logs
 
