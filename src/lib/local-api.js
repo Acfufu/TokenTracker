@@ -13,6 +13,7 @@ const {
   normalizeUsageScope,
 } = require("./source-metadata");
 const { accountSlugFor, fetchAccountUsage, mintAccessToken, invalidateCloudAccountPayloadCache, getCloudAccountSessionGeneration } = require("./cloud-account");
+const { resetCloudDeviceUsage, readCloudUsageReset } = require("./cloud-usage-reset");
 const { getOrCreateMachineId, computeStableMachineId } = require("./machine-id");
 const { functionUrlFor, fetchFunctionResponse } = require("./function-url");
 const { createCloudDeviceTokenStore } = require("./cloud-device-token");
@@ -2162,6 +2163,39 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
       return true;
     }
 
+    if (p === "/functions/tokentracker-cloud-usage-reset") {
+      if (!isAuthorizedLocalMutation(req) || req.headers["sec-fetch-site"] === "cross-site") { json(res, { error: "Unauthorized" }, 401); return true; }
+      try {
+        if (String(req.method).toUpperCase() === "GET") {
+          json(res, { pending: Boolean(readCloudUsageReset(trackerDataDir)) }); return true;
+        }
+        if (String(req.method).toUpperCase() !== "POST") { json(res, { error: "Method Not Allowed" }, 405); return true; }
+        const body = await readJsonBody(req);
+        const session = localCloudSession;
+        if (!getCloudSyncPref() || !session || body.cloudSessionId !== session.id || body.expectedOwnerId !== session.ownerId) {
+          json(res, { code: "auth_session_changed" }, 409); return true;
+        }
+        const metadata = localSyncDeviceMetadata.get(session.token);
+        const accessToken = String(req.headers.authorization || "").replace(/^Bearer /i, "").trim();
+        const runtime = assertInsforgeRuntime(getRuntime());
+        let claims;
+        try { claims = JSON.parse(Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8")); } catch { /* rejected below */ }
+        if (claims?.sub !== session.ownerId || !Number.isFinite(claims?.exp) || claims.exp * 1000 <= Date.now()) {
+          json(res, { code: "auth_required" }, 401); return true;
+        }
+        const isCurrent = () => getCloudSyncPref() && localCloudSession === session && session.generation === localCloudGeneration &&
+          claims.exp * 1000 > Date.now() && getRuntime().baseUrl === session.baseUrl;
+        const result = await resetCloudDeviceUsage({ trackerDir: trackerDataDir, ownerId: session.ownerId,
+          deviceId: metadata?.deviceId, baseUrl: session.baseUrl, anonKey: runtime.anonKey, accessToken, isCurrent });
+        if (!isCurrent()) { json(res, { code: "auth_session_changed" }, 409); return true; }
+        clearLocalSyncDeviceTokenCache();
+        invalidateAfterAccountUpload();
+        invalidateCloudAccountPayloadCache();
+        json(res, { ...result, pending: true });
+      } catch (error) { json(res, { error: error.code || "cloud_usage_reset_failed", code: error.code || null }, error.status || 502); }
+      return true;
+    }
+
     // --- local-sync (POST) ---
     if (p === "/functions/tokentracker-local-sync") {
       if (String(req.method || "GET").toUpperCase() !== "POST") {
@@ -2263,10 +2297,20 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
         if (extraEnv.TOKENTRACKER_DEVICE_TOKEN && uploadGeneration !== localCloudGeneration) {
           json(res, { ok: false, code: "auth_session_changed" }, 409); return true;
         }
+        if (extraEnv.TOKENTRACKER_DEVICE_TOKEN) {
+          const metadata = localSyncDeviceMetadata.get(extraEnv.TOKENTRACKER_DEVICE_TOKEN);
+          if (metadata?.deviceId) extraEnv.TOKENTRACKER_CLOUD_DEVICE_ID = metadata.deviceId;
+        }
         await Promise.all([...activeCloudSyncs].filter(controller => controller.signal.aborted).map(controller => controller.done).filter(Boolean));
         if (extraEnv.TOKENTRACKER_DEVICE_TOKEN && uploadGeneration !== localCloudGeneration) throw Object.assign(new Error("Account session changed"), { code: "auth_session_changed", status: 409 });
         if (extraEnv.TOKENTRACKER_DEVICE_TOKEN && localSyncDeviceTokenUserId) {
-          const binding = JSON.stringify({ ownerId: localSyncDeviceTokenUserId, baseUrl: localSyncBaseUrl || getRuntime().baseUrl });
+          const uploadBaseUrl = localSyncBaseUrl || getRuntime().baseUrl;
+          const reset = readCloudUsageReset(trackerDataDir);
+          if (reset && (reset.ownerId !== localSyncDeviceTokenUserId || reset.baseUrl.replace(/\/$/, "") !== uploadBaseUrl.replace(/\/$/, "") ||
+              (extraEnv.TOKENTRACKER_CLOUD_DEVICE_ID && reset.deviceId !== extraEnv.TOKENTRACKER_CLOUD_DEVICE_ID))) {
+            json(res, { ok: false, code: "cloud_usage_reset_owner_changed" }, 409); return true;
+          }
+          const binding = JSON.stringify({ ownerId: localSyncDeviceTokenUserId, baseUrl: uploadBaseUrl });
           const ownerPath = path.join(path.dirname(qp), "cloud-upload-owner.json");
           let previous = "";
           try { previous = fs.readFileSync(ownerPath, "utf8"); } catch { /* an unbound legacy cursor cannot prove its previous owner */ }
@@ -2279,6 +2323,7 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
         const controller = new AbortController();
         if (extraEnv.TOKENTRACKER_DEVICE_TOKEN) activeCloudSyncs.add(controller);
         const syncStartedAt = Date.now();
+        if (localSyncDeviceTokenUserId) extraEnv.TOKENTRACKER_CLOUD_OWNER_ID = localSyncDeviceTokenUserId;
         extraEnv.TOKENTRACKER_LOCAL_SYNC_ATTEMPT_ID = crypto.randomUUID();
         const syncPromise = runSyncCommand(extraEnv, {
           signal: controller.signal,

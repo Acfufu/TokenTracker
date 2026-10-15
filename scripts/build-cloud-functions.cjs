@@ -8,6 +8,7 @@ const ROOT = path.resolve(__dirname, "..");
 const FUNCTIONS = [
   "tokentracker-billing", "tokentracker-waffo-webhook", "tokentracker-paddle-webhook", "tokentracker-wechat-webhook", "tokentracker-alipay-webhook",
   "tokentracker-device-token-issue", "tokentracker-device-flow-grant", "tokentracker-device-flow-poll", "tokentracker-ingest",
+  "tokentracker-device-usage-reset",
   "tokentracker-account-summary", "tokentracker-account-daily", "tokentracker-account-hourly", "tokentracker-account-monthly",
   "tokentracker-account-heatmap", "tokentracker-account-model-breakdown", "tokentracker-account-devices",
   "tokentracker-leaderboard", "tokentracker-leaderboard-profile",

@@ -101,6 +101,47 @@ test("CN CLI organization credentials use the usage presentation API", async (t)
   assert.equal(result.primary_window.used_percent, 25);
 });
 
+test("CN CLI keeps add-on credits separate from plan credits for both API shapes", async (t) => {
+  // Field names and separate bucket semantics come from the official
+  // @qodercn-ai/qoderclicn 1.1.71 normalizer and /usage view; amounts are fixtures.
+  const home = fixtureHome(t);
+  for (const payload of [
+    { ...USAGE, total_usage_percentage: 0.1, add_on_quota: { total: 500, used: 35, remaining: 465, percentage: 0.07 } },
+    { displayMode: "qoder", qoderUsage: { userType: "personal_pro", userQuota: USAGE.user_quota,
+      addOnQuota: { total: 500, used: 35, remaining: 465, percentage: 0.07 } } },
+  ]) {
+    const result = await fetchQoderCnLimits({ home, env: {}, rpcRequest: unavailableRpc,
+      fetchImpl: async () => response(payload) });
+    assert.equal(result.primary_window.limit_credits, 100);
+    assert.equal(result.primary_window.used_credits, 25);
+    assert.equal(result.primary_window.used_percent, 25);
+    assert.equal(result.tertiary_window.limit_credits, 500);
+    assert.equal(result.tertiary_window.used_credits, 35);
+    assert.equal(result.tertiary_window.remaining_credits, 465);
+    assert.ok(Math.abs(result.tertiary_window.used_percent - 7) < 1e-9);
+    assert.equal(result.tertiary_window.reset_at, null);
+    const cached = await fetchQoderCnLimits({ home, env: {}, rpcRequest: unavailableRpc,
+      fetchImpl: async () => ({ ok: false, status: 401 }) });
+    assert.equal(cached.source, "disk-cache");
+    assert.deepEqual(cached.tertiary_window, result.tertiary_window);
+  }
+});
+
+test("CN CLI handles absent, empty and standalone add-on quotas without inventing capacity", () => {
+  const absent = normalizeQoderCnCliUsage(USAGE, normalizeQoderRpcUsage);
+  assert.equal(absent.tertiary_window, undefined);
+  const empty = normalizeQoderCnCliUsage({ ...USAGE,
+    add_on_quota: { total: 0, used: 0, remaining: 0 } }, normalizeQoderRpcUsage);
+  assert.equal(empty.tertiary_window.used_percent, 0);
+  assert.equal(empty.tertiary_window.remaining_credits, 0);
+  const standalone = normalizeQoderCnCliUsage({ add_on_quota: { total: 500, used: 35 } }, normalizeQoderRpcUsage);
+  assert.equal(standalone.primary_window, null);
+  assert.equal(standalone.tertiary_window.remaining_credits, 465);
+  for (const add_on_quota of [{ total: null, used: 1 }, { total: 10, used: -1 }, { total: 0, used: 1 }, { total: 10, used: 1, remaining: "bad" }]) {
+    assert.throws(() => normalizeQoderCnCliUsage({ ...USAGE, add_on_quota }, normalizeQoderRpcUsage), /add-on quota/);
+  }
+});
+
 test("CN CLI rejects malformed quotas and ignores damaged encrypted credentials", async (t) => {
   assert.throws(() => normalizeQoderCnCliUsage({ user_quota: { total: null, used: 1 } }, normalizeQoderRpcUsage), /invalid quota/);
   assert.throws(() => normalizeQoderCnCliUsage({ user_quota: { total: 10, used: -1 } }, normalizeQoderRpcUsage), /invalid quota/);

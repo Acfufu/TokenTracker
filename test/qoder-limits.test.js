@@ -96,6 +96,42 @@ test("normalizeQoderUsageResponse rejects invalid quota values", () => {
   );
 });
 
+test("Qoder IPC add-on credits do not borrow the aggregate percentage or plan expiry", () => {
+  const result = normalizeQoderRpcUsage({
+    userType: "personal_pro", expiresAt: "2026-12-01T00:00:00Z", totalUsagePercentage: 10,
+    userQuota: { total: 100, used: 25, remaining: 75, percentage: 25 },
+    addOnQuota: { total: 500, used: 35, remaining: 465, percentage: 7 },
+  });
+  assert.equal(result.primary_window.used_percent, 25);
+  assert.equal(result.primary_window.limit_credits, 100);
+  assert.equal(result.primary_window.reset_at, "2026-12-01T00:00:00.000Z");
+  assert.equal(result.secondary_window, undefined);
+  assert.equal(result.tertiary_window.remaining_credits, 465);
+  assert.equal(result.tertiary_window.reset_at, null);
+});
+
+test("Qoder caches add-on credits independently from plan and Ultimate expiry", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-addon-cache-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2026-10-15T00:00:00Z");
+  const result = normalizeQoderRpcUsage({
+    expiresAt: "2026-10-15T01:00:00Z",
+    userQuota: { total: 100, used: 25, remaining: 75 },
+    addOnQuota: { total: 500, used: 35, remaining: 465 },
+  });
+  result.secondary_window = { used_percent: 40, used_credits: 80, limit_credits: 200,
+    remaining_credits: 120, reset_at: "2026-10-15T03:00:00Z", unit: "calls" };
+  writeQoderLimitsCache(result, { home, nowMs, namespace: "cn" });
+  const cached = readQoderLimitsCache({ home, nowMs: nowMs + 2 * 3600_000, namespace: "cn" });
+  assert.equal(cached.primary_window, null);
+  assert.deepEqual(cached.secondary_window, result.secondary_window);
+  assert.deepEqual(cached.tertiary_window, result.tertiary_window);
+  assert.equal(readQoderLimitsCache({ home, nowMs, namespace: undefined }), null);
+  assert.equal(readQoderLimitsCache({ home, nowMs: nowMs + 13 * 3600_000, namespace: "cn" }), null);
+  writeQoderLimitsCache({ ...result, primary_window: null, secondary_window: null }, { home, nowMs, namespace: "cn" });
+  assert.deepEqual(readQoderLimitsCache({ home, nowMs, namespace: "cn" }).tertiary_window, result.tertiary_window);
+});
+
 test("fetchQoderUsage sends the CodeXbar-compatible browser request", async () => {
   let captured;
   const fetchImpl = async (url, options) => {

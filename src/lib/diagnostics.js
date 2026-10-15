@@ -228,7 +228,7 @@ async function collectTrackerDiagnostics({
         ? { wsl_mode: wsl.getWslMode(process.env), wsl_installs: kiroWslInstalls }
         : {}),
       cli_approximation:
-        "Kiro CLI does not persist explicit token counts (billing is credit-based on Bedrock). Tokens are approximated at 4 chars/token from user prompt chars and assistant response chars. Source rows that came through this path have model='kiro-cli-agent' when the underlying model is unknown (auto-routing); known Bedrock ARNs canonicalize to their short name (e.g. claude-sonnet-4).",
+        "When Kiro CLI does not report token counts, tokens are estimated at ~4 chars/token from new user messages, tool outputs and assistant text. The estimate does not measure re-sent history, system context or cache usage, and can substantially undercount tool-heavy requests. contextUsage percentages are not converted to tokens because their denominator and request correspondence are not established. Dollar amounts use model rates, not Kiro credit charges; recorded usage_summary credits remain separate. Source rows use model='kiro-cli-agent' when the underlying model is unknown; known Bedrock ARNs canonicalize to their short name (e.g. claude-sonnet-4).",
       merge_policy:
         "Kiro IDE and Kiro CLI both emit source='kiro' in queue.jsonl so token, cost, heatmap, and leaderboard aggregations merge transparently. Use this block to distinguish sub-path contributions.",
     },

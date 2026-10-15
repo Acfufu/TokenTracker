@@ -172,5 +172,6 @@ test("ordinary Cloud builds retain original environment reads and do not read sa
   assert.match(source, /Alipay SDK 4\.14\.0/);
   assert.equal(source.includes("TOKENTRACKER_SANDBOX_"), false);
   assert.equal(source.includes("tokentrackerSandboxEnv"), false);
-  assert.equal(production.functions.length, 18);
+  assert.equal(production.functions.length, 19);
+  assert.ok(production.functions.includes("tokentracker-device-usage-reset"));
 });

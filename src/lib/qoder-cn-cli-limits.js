@@ -61,15 +61,16 @@ async function cnRequest(url, options, fetchImpl, { tokenExchange = false } = {}
 function normalizeQoderCnCliUsage(response, normalizeRpcUsage) {
   const usage = response?.displayMode === "qoder" ? response.qoderUsage : response;
   const rawQuota = usage?.userQuota ?? usage?.user_quota;
-  if (!rawQuota || typeof rawQuota !== "object") {
+  const addOnQuota = usage?.addOnQuota ?? usage?.add_on_quota;
+  if ((!rawQuota || typeof rawQuota !== "object") && !addOnQuota) {
     throw new Error("Qoder CN usage response is missing the plan quota.");
   }
-  const total = Number(rawQuota.total);
-  const used = Number(rawQuota.used);
-  const remaining = rawQuota.remaining == null ? Math.max(0, total - used) : Number(rawQuota.remaining);
-  if (rawQuota.total == null || rawQuota.used == null
+  const total = Number(rawQuota?.total);
+  const used = Number(rawQuota?.used);
+  const remaining = rawQuota?.remaining == null ? Math.max(0, total - used) : Number(rawQuota.remaining);
+  if (rawQuota && (rawQuota.total == null || rawQuota.used == null
     || ![total, used, remaining].every(Number.isFinite) || Math.min(total, used, remaining) < 0
-    || (total === 0 && (used !== 0 || remaining !== 0))) {
+    || (total === 0 && (used !== 0 || remaining !== 0)))) {
     throw new Error("Qoder CN usage response has invalid quota values.");
   }
   // The OpenAPI returns fractions; the old desktop IPC already returns percents.
@@ -77,7 +78,8 @@ function normalizeQoderCnCliUsage(response, normalizeRpcUsage) {
     userType: usage.userType ?? usage.user_type,
     expiresAt: usage.expiresAt ?? usage.expires_at,
     isQuotaExceeded: usage.isQuotaExceeded ?? usage.is_quota_exceeded,
-    userQuota: { used, total, remaining, unit: rawQuota.unit },
+    userQuota: rawQuota ? { used, total, remaining, unit: rawQuota.unit } : null,
+    addOnQuota,
   });
   result.source = "cli-api";
   return result;

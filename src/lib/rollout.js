@@ -9750,8 +9750,8 @@ async function parseKimiCodeIncremental({ wireFiles, cursors, queuePath, onProgr
     const prevIno = prevEntry.ino;
     const inodeChanged = typeof prevIno === "number" && prevIno !== stat.ino;
     const startOffset = stat.size < prevSize || inodeChanged ? 0 : prevSize;
-    // Model is declared in a `config.update` near the file head; persist it on
-    // the cursor so incremental resumes (which start past that line) keep it.
+    // Persist the latest config/profile/request model so an incremental read
+    // starting after that declaration keeps the same attribution.
     let fileModel = (typeof prevEntry.model === "string" && prevEntry.model) || fallbackModel;
     if (stat.size <= startOffset) continue;
 
@@ -9766,8 +9766,10 @@ async function parseKimiCodeIncremental({ wireFiles, cursors, queuePath, onProgr
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }
 
-      if (entry.type === "config.update") {
-        const alias = kimiCodeModelAlias(entry.modelAlias);
+      // Kimi Code 2.x can bind or reroute the model without config.update.
+      // These records precede step.end and carry the model actually requested.
+      if (["config.update", "profile.bind", "llm.request"].includes(entry.type)) {
+        const alias = kimiCodeModelAlias(entry.modelAlias || entry.model);
         if (alias) fileModel = alias;
         continue;
       }

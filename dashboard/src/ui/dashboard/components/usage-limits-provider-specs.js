@@ -199,6 +199,7 @@ export const PROVIDER_LIMIT_SPECS = {
     windows(data) {
       return [
         { key: "credits", labelKey: "limits.label.qoder_cn_credits", window: data.primary_window },
+        { key: "addon", labelKey: "limits.label.qoder_cn_addon_credits", window: data.tertiary_window },
         {
           key: "ultimate",
           labelKey: "limits.label.qoder_cn_ultimate",
@@ -302,6 +303,7 @@ export function usageLimitsLabelCopyAnchor() {
     copy("limits.label.qoder_credits"),
     copy("limits.label.qoder_ultimate"),
     copy("limits.label.qoder_cn_credits"),
+    copy("limits.label.qoder_cn_addon_credits"),
     copy("limits.label.qoder_cn_ultimate"),
     copy("limits.label.command_code_5h"),
     copy("limits.label.command_code_weekly"),

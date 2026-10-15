@@ -1300,7 +1300,7 @@ async function cmdStatus(argv = []) {
         ? `- Kimi Code: passive reader (${kimiWireFiles.length + kimiCodeWireFiles.length} wire.jsonl file${(kimiWireFiles.length + kimiCodeWireFiles.length) !== 1 ? "s" : ""} found, directories: ${kimiActive.join(" | ") || "none"})`
         : null,
       kiroCliInstalled
-        ? `- Kiro CLI: passive reader (${kiroCliFileCount} session file${kiroCliFileCount !== 1 ? "s" : ""} found, SQLite ${kiroCliDbFound ? "found" : "not found"}, installs: ${kiroCliActive.join(" | ")}; tokens approximated from char lengths and merged under 'kiro')`
+        ? `- Kiro CLI: passive reader (${kiroCliFileCount} session file${kiroCliFileCount !== 1 ? "s" : ""} found, SQLite ${kiroCliDbFound ? "found" : "not found"}, installs: ${kiroCliActive.join(" | ")}; missing token counts use new-text estimates at ~4 chars/token, excluding re-sent history, system context and cache usage; model-rate costs are separate from Kiro credit charges; merged under 'kiro')`
         : null,
       kiroIdeInstalled
         ? `- Kiro IDE: passive reader (${kiroIdeActive.join(" | ")})`

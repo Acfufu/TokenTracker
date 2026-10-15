@@ -341,6 +341,10 @@ export function UsageOverview({
     (provider) =>
       String(provider?.source || provider?.label || "").trim().toLowerCase() === "devin",
   );
+  const kiroContributes = providers.some(
+    (provider) =>
+      String(provider?.source || provider?.label || "").trim().toLowerCase() === "kiro",
+  );
   // TRAE cost leaves out input without a cache split (docs/trae.md). Keep the
   // caveat visible with the combined totals, including cloud data, which has
   // no per-bucket marker.
@@ -648,6 +652,7 @@ export function UsageOverview({
                 className="mt-2"
               >
                 {devinContributes && <DevinPricingNotice />}
+                {kiroContributes && <KiroEstimateNotice />}
                 <AllModelsSection models={allModels} />
               </div>
             )}
@@ -874,6 +879,17 @@ function DevinPricingNotice() {
   );
 }
 
+function KiroEstimateNotice() {
+  return (
+    <p className="mb-3 text-[10px] leading-snug text-oai-gray-400 dark:text-oai-gray-500">
+      <span className="font-medium text-oai-gray-500 dark:text-oai-gray-400">
+        {copy("usage.overview.kiro_notice_title")}.
+      </span>{" "}
+      {copy("usage.overview.kiro_notice_body")}
+    </p>
+  );
+}
+
 // Renders a single expanded provider section. Hosts loading state for the
 // inline Context Breakdown so the spinner can sit next to the heading instead
 // of taking its own row.
@@ -884,6 +900,8 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
     String(provider?.source || provider?.label || "").trim().toLowerCase() === "antigravity";
   const isDevin =
     String(provider?.source || provider?.label || "").trim().toLowerCase() === "devin";
+  const isKiro =
+    String(provider?.source || provider?.label || "").trim().toLowerCase() === "kiro";
 
   return (
                       <div>
@@ -937,6 +955,7 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
                             verified pricing, so the dollar figure excludes them —
                             a $0 estimate is not evidence of free usage. */}
                         {isDevin && <DevinPricingNotice />}
+                        {isKiro && <KiroEstimateNotice />}
 
                         {/* Context Breakdown drill-down.
                             Claude: category-based (approx /context).

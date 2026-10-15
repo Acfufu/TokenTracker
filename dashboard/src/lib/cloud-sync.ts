@@ -205,3 +205,41 @@ export async function runCloudUsageSyncNow(getAccessToken: () => Promise<string 
   const accessToken = await syncCloudUsageWithRecovery(getAccessToken, { drain: true });
   if (!accessToken) return;
 }
+
+export async function rebuildCloudDeviceUsage(getAccessToken: () => Promise<string | null>): Promise<{ pending: boolean }> {
+  let accessToken = await getAccessToken();
+  const ownerId = accessToken ? accessTokenOwner(accessToken) : "";
+  if (!getCloudSyncEnabled() || !accessToken || !ownerId) throw Object.assign(new Error("auth_required"), { code: "auth_required" });
+  await syncCloudSyncPrefToLocalServer();
+  const session = await resolveCloudDeviceSession(getAccessToken, ownerId);
+  if (!session || session.ownerId !== ownerId) throw Object.assign(new Error("auth_session_changed"), { code: "auth_session_changed" });
+  const generation = getCloudDeviceSessionGeneration();
+  const localHeaders = await getLocalApiAuthHeaders();
+  accessToken = await getAccessToken();
+  if (!getCloudSyncEnabled() || getCloudDeviceSessionGeneration() !== generation || !accessToken || accessTokenOwner(accessToken) !== ownerId) {
+    throw Object.assign(new Error("auth_session_changed"), { code: "auth_session_changed" });
+  }
+  const headers = { "Content-Type": "application/json", ...localHeaders, Authorization: `Bearer ${accessToken}` };
+  const response = await fetch("/functions/tokentracker-cloud-usage-reset", { method: "POST", headers,
+    body: JSON.stringify({ expectedOwnerId: ownerId, cloudSessionId: session.localSessionId }) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result.ok !== true) throw Object.assign(new Error(result.code || "cloud_usage_reset_failed"), { code: result.code, status: response.status });
+  if (!getCloudSyncEnabled() || getCloudDeviceSessionGeneration() !== generation) {
+    throw Object.assign(new Error("auth_session_changed"), { code: "auth_session_changed" });
+  }
+  clearCloudDeviceSession();
+  const latestToken = await getAccessToken();
+  if (!getCloudSyncEnabled() || !latestToken || accessTokenOwner(latestToken) !== ownerId) {
+    throw Object.assign(new Error("auth_session_changed"), { code: "auth_session_changed" });
+  }
+  await runCloudUsageSyncNow(getAccessToken);
+  const uploadGeneration = getCloudDeviceSessionGeneration();
+  const state = await fetch("/functions/tokentracker-cloud-usage-reset", { headers: await getLocalApiAuthHeaders() });
+  if (!state.ok) throw Object.assign(new Error("cloud_usage_reset_failed"), { status: state.status });
+  const pending = (await state.json()).pending !== false;
+  const currentToken = await getAccessToken();
+  if (!getCloudSyncEnabled() || getCloudDeviceSessionGeneration() !== uploadGeneration || !currentToken || accessTokenOwner(currentToken) !== ownerId) {
+    throw Object.assign(new Error("auth_session_changed"), { code: "auth_session_changed" });
+  }
+  return { pending };
+}

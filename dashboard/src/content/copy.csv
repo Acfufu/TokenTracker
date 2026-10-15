@@ -2087,3 +2087,13 @@ cloud.free.device_scope,cloud,CloudPage,CloudPage,text,"Usage statistics for thi
 cloud.plan.includes_local,cloud,CloudPage,CloudPage,text,"All free local features included",,active
 cloud.plan.device_sync,cloud,CloudPage,CloudPage,text,"Unlimited devices · cross-device usage sync",,active
 cloud.plan.device_fair_use,cloud,CloudPage,CloudPage,text,"Unlimited devices for everyday personal use, with no per-device charges. Bulk or abnormal device connections may trigger sync protection.",,active
+limits.label.qoder_cn_addon_credits,ui,LimitsPage,UsageLimitsPanel,qoder_cn_addon_credits,Add-on Credits,,active
+cloud.rebuild.action,cloud,SettingsPage,CloudRebuildControl,action,Rebuild this device's cloud data,,active
+cloud.rebuild.title,cloud,SettingsPage,CloudRebuildControl,title,Rebuild cloud data?,,active
+cloud.rebuild.description,cloud,SettingsPage,CloudRebuildControl,description,"This removes this device's cloud usage and uploads its current local history again. Cloud-only history from this device will be lost. Local data, other devices and account-shared usage are kept.",,active
+cloud.rebuild.pending,cloud,SettingsPage,CloudRebuildControl,pending,Rebuilding. Remaining history will continue uploading during sync.,,active
+cloud.rebuild.complete,cloud,SettingsPage,CloudRebuildControl,complete,This device's cloud data has been rebuilt.,,active
+cloud.rebuild.error,cloud,SettingsPage,CloudRebuildControl,error,Rebuild did not finish. Retry to continue the same operation. Local data is unchanged.,,active
+cloud.rebuild.busy,cloud,SettingsPage,CloudRebuildControl,busy,"Sync is running. Wait for it to finish, then retry.",,active
+usage.overview.kiro_notice_title,dashboard,DashboardPage,UsageOverview,kiro_notice_title,CLI token estimates,,active
+usage.overview.kiro_notice_body,dashboard,DashboardPage,UsageOverview,kiro_notice_body,"When Kiro CLI does not report token counts, tokens are estimated from new user messages, tool outputs and assistant text at ~4 characters/token. Re-sent history, system context and cache usage are not measured. Dollar amounts use model rates and do not represent Kiro credit charges.",,active

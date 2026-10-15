@@ -35,6 +35,9 @@ internal static class Program
         // (in the system browser) can deep-link the code back to us.
         UrlProtocol.EnsureRegistered();
 
+        // Set per-monitor DPI awareness before WPF can create any HWNDs.
+        ApplicationConfiguration.Initialize();
+
         // A WPF Application instance gives the (WPF) dashboard window its resource /
         // dispatcher context. We never call its Run(); the WinForms message pump below
         // drives the shared STA thread (and the WPF Dispatcher rides on it). Explicit
@@ -69,7 +72,6 @@ internal static class Program
             Diag.Log("program", $"WPF dispatcher exception unhandled: {e.Exception}");
         };
 
-        ApplicationConfiguration.Initialize();
         // Show the desktop pet on a normal launch (manual run or post-install), but stay
         // quietly in the tray when Windows auto-starts us at login or when we were only
         // spun up to relay an OAuth deep link (the pet then restores only if it was open

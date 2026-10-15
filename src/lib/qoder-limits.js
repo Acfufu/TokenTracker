@@ -240,21 +240,47 @@ function qoderRpcRequest(method, params = {}, {
   });
 }
 
+function normalizeQoderAddOnQuota(quota) {
+  if (quota == null) return null;
+  const used = Number(quota.used);
+  const total = Number(quota.total);
+  const remaining = quota.remaining == null ? Math.max(0, total - used) : Number(quota.remaining);
+  if (quota.used == null || quota.total == null
+    || ![used, total, remaining].every(Number.isFinite) || Math.min(used, total, remaining) < 0
+    || (total === 0 && (used !== 0 || remaining !== 0))) {
+    throw new Error("Qoder add-on quota values are invalid.");
+  }
+  return {
+    used_percent: total > 0 ? Math.min(100, (used / total) * 100) : 0,
+    // The official addOnQuota has no renewal date. Plan expiry does not apply.
+    reset_at: null,
+    used_credits: used,
+    limit_credits: total,
+    remaining_credits: remaining,
+    unit: typeof quota.unit === "string" && quota.unit.trim() ? quota.unit.trim() : "credits",
+  };
+}
+
 function normalizeQoderRpcUsage(response) {
   if (!response || typeof response !== "object") return null;
   const quota = response.userQuota;
-  if (!quota || typeof quota !== "object") return null;
-  const used = finiteNumber(quota.used, "userQuota.used");
-  const total = finiteNumber(quota.total, "userQuota.total");
-  const remaining = finiteNumber(quota.remaining, "userQuota.remaining");
-  const reportedPercent = Number(response.totalUsagePercentage ?? quota.percentage);
+  // Qoder CN CLI 1.1.71 renders userQuota and addOnQuota as separate buckets.
+  // Only its account-level total_remaining adds them together.
+  const addOnWindow = normalizeQoderAddOnQuota(response.addOnQuota);
+  if ((!quota || typeof quota !== "object") && !addOnWindow) return null;
+  const used = quota ? finiteNumber(quota.used, "userQuota.used") : 0;
+  const total = quota ? finiteNumber(quota.total, "userQuota.total") : 0;
+  const remaining = quota ? finiteNumber(quota.remaining, "userQuota.remaining") : 0;
+  const reportedPercent = Number(response.totalUsagePercentage ?? quota?.percentage);
   const usedPercent = total === 0
     ? 0
-    : response.isQuotaExceeded === true
-      ? 100
-      : Number.isFinite(reportedPercent)
-        ? reportedPercent
-        : (used / total) * 100;
+    : addOnWindow
+      ? (used / total) * 100
+      : response.isQuotaExceeded === true
+        ? 100
+        : Number.isFinite(reportedPercent)
+          ? reportedPercent
+          : (used / total) * 100;
   const normalizedExpiry = normalizeResetAt(response.expiresAt);
   const expiryMs = normalizedExpiry ? Date.parse(normalizedExpiry) : NaN;
   return {
@@ -262,7 +288,7 @@ function normalizeQoderRpcUsage(response) {
     error: null,
     plan_label: typeof response.userType === "string" ? response.userType : null,
     quota_exceeded: response.isQuotaExceeded === true,
-    primary_window: {
+    primary_window: quota ? {
       used_percent: Math.max(0, Math.min(100, usedPercent)),
       // Qoder uses 9999-12-31 as a no-expiry sentinel for Free accounts.
       reset_at: Number.isFinite(expiryMs) && expiryMs < Date.UTC(2100, 0, 1)
@@ -272,7 +298,8 @@ function normalizeQoderRpcUsage(response) {
       limit_credits: total,
       remaining_credits: remaining,
       unit: typeof quota.unit === "string" && quota.unit.trim() ? quota.unit.trim() : "credits",
-    },
+    } : null,
+    ...(addOnWindow ? { tertiary_window: addOnWindow } : {}),
     source: "local-ipc",
   };
 }
@@ -389,8 +416,9 @@ function readQoderLimitsCache({
     if (!Number.isFinite(cachedAtMs) || cachedAtMs > nowMs + 60_000) return null;
     const primaryWindow = qoderCachedWindow(raw.primary_window, { cachedAtMs, nowMs });
     const secondaryWindow = qoderCachedWindow(raw.secondary_window, { cachedAtMs, nowMs });
-    if (!primaryWindow && !secondaryWindow) return null;
-    const hasUnexpiredDatedWindow = [primaryWindow, secondaryWindow]
+    const tertiaryWindow = qoderCachedWindow(raw.tertiary_window, { cachedAtMs, nowMs });
+    if (!primaryWindow && !secondaryWindow && !tertiaryWindow) return null;
+    const hasUnexpiredDatedWindow = [primaryWindow, secondaryWindow, tertiaryWindow]
       .some((window) => Number.isFinite(Date.parse(window?.reset_at || "")));
     if (nowMs - cachedAtMs > QODER_LIMITS_CACHE_MAX_AGE_MS && !hasUnexpiredDatedWindow) {
       return null;
@@ -402,6 +430,7 @@ function readQoderLimitsCache({
       quota_exceeded: raw.quota_exceeded === true,
       primary_window: primaryWindow,
       secondary_window: secondaryWindow,
+      ...(tertiaryWindow ? { tertiary_window: tertiaryWindow } : {}),
       cached: true,
       stale: true,
       cached_at: raw.cached_at,
@@ -417,7 +446,7 @@ function writeQoderLimitsCache(limits, {
   nowMs = Date.now(),
   namespace,
 } = {}) {
-  if (!limits?.configured || limits.error || (!limits.primary_window && !limits.secondary_window)) return;
+  if (!limits?.configured || limits.error || (!limits.primary_window && !limits.secondary_window && !limits.tertiary_window)) return;
   const cachePath = qoderLimitsCachePath({ home, namespace });
   const payload = {
     qoder: {
@@ -425,6 +454,7 @@ function writeQoderLimitsCache(limits, {
       quota_exceeded: limits.quota_exceeded === true,
       primary_window: limits.primary_window || null,
       secondary_window: limits.secondary_window || null,
+      ...(limits.tertiary_window ? { tertiary_window: limits.tertiary_window } : {}),
       cached_at: new Date(nowMs).toISOString(),
     },
   };
