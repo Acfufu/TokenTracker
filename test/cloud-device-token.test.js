@@ -56,3 +56,16 @@ test("a symlink cache is rejected without reading or chmodding its target", { sk
   assert.equal(createCloudDeviceTokenStore(file).get(binding), null);
   assert.equal((await fs.stat(target)).mode & 0o777, 0o644);
 });
+
+test("unchanged credentials skip rewrite after load preserves version equality", async (t) => {
+  const { file } = await fixture(t);
+  const store = createCloudDeviceTokenStore(file);
+  assert.equal(store.set(binding, "device-a"), true);
+  const before = await fs.readFile(file, "utf8");
+  // Force a fresh store so load() goes through readCloudDeviceTokenEntry.
+  const reloaded = createCloudDeviceTokenStore(file);
+  assert.equal(reloaded.get(binding), "device-a");
+  assert.equal(reloaded.set(binding, "device-a"), true);
+  assert.equal(await fs.readFile(file, "utf8"), before);
+});
+

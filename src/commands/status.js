@@ -47,6 +47,7 @@ const {
   probeOpenclawSessionPluginState,
 } = require("../lib/openclaw-session-plugin");
 const { resolveTrackerPaths } = require("../lib/tracker-paths");
+const { resolveDeviceTokenPresence } = require("../lib/cloud-device-token");
 const {
   resolveKimiWireFiles,
   resolveKimiCodeWireFiles,
@@ -1042,12 +1043,17 @@ async function cmdStatus(argv = []) {
     },
   });
 
+  const deviceTokenPresence = resolveDeviceTokenPresence({
+    trackerDir,
+    config: config || {},
+  });
+
   if (opts.json || opts.light) {
     const summary = {
       version: pkg.version,
       generated_at: new Date().toISOString(),
       base_url: config?.baseUrl || null,
-      device_token_set: Boolean(config?.deviceToken),
+      device_token_set: deviceTokenPresence.set,
       queue: {
         pending_bytes: pendingBytes,
         size_bytes: queueSize,
@@ -1280,7 +1286,7 @@ async function cmdStatus(argv = []) {
       `TokenTracker v${pkg.version}`,
       "Status:",
       `- Base URL: ${config?.baseUrl || "unset"}`,
-      `- Device token: ${config?.deviceToken ? "set" : "unset"}`,
+      `- Device token: ${deviceTokenPresence.set ? "set" : "unset"}`,
       `- Queue: ${pendingBytes} bytes pending`,
       `- Last parse: ${cursors?.updatedAt || "never"}`,
       `- Last notify: ${lastNotify || "never"}`,

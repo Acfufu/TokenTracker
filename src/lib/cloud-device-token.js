@@ -1,11 +1,36 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const {
+  resolveRuntimeConfig,
+  normalizeInstanceBaseUrl,
+} = require("./runtime-config");
 
 function validBinding(binding) {
   return ["userId", "baseUrl", "machineId"].every(
     (key) => typeof binding?.[key] === "string" && binding[key].length > 0,
   );
+}
+
+function readCloudDeviceTokenEntry(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    if (!fs.fstatSync(fd).isFile()) return null;
+    fs.fchmodSync(fd, 0o600);
+    const data = JSON.parse(fs.readFileSync(fd, "utf8"));
+    if (data?.version === 1 && validBinding(data) && typeof data.token === "string" && data.token) {
+      return {
+        version: 1,
+        userId: data.userId,
+        baseUrl: data.baseUrl,
+        machineId: data.machineId,
+        token: data.token,
+      };
+    }
+  } catch { /* missing or invalid cache requires ordinary issuance */ }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+  return null;
 }
 
 // A successful auth refresh supplies the binding. This file never imports a
@@ -17,15 +42,7 @@ function createCloudDeviceTokenStore(filePath) {
   function load() {
     if (loaded) return entry;
     loaded = true;
-    let fd;
-    try {
-      fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-      if (!fs.fstatSync(fd).isFile()) return null;
-      fs.fchmodSync(fd, 0o600);
-      const data = JSON.parse(fs.readFileSync(fd, "utf8"));
-      if (data?.version === 1 && validBinding(data) && typeof data.token === "string" && data.token) entry = data;
-    } catch { /* missing or invalid cache requires ordinary issuance */ }
-    finally { if (fd !== undefined) fs.closeSync(fd); }
+    entry = readCloudDeviceTokenEntry(filePath);
     return entry;
   }
 
@@ -71,4 +88,54 @@ function createCloudDeviceTokenStore(filePath) {
   };
 }
 
-module.exports = { createCloudDeviceTokenStore };
+/**
+ * Presence for status/doctor/diagnostics — same stores upload uses.
+ * Prefer config/env/cli (resolveRuntimeConfig); else cloud-device-token.json
+ * when baseUrl (+ machineId when known) match. Never clears the store.
+ */
+function resolveDeviceTokenPresence({
+  trackerDir,
+  config = {},
+  runtime = null,
+  env = process.env,
+} = {}) {
+  const resolved = runtime || resolveRuntimeConfig({ config, env });
+  if (typeof resolved?.deviceToken === "string" && resolved.deviceToken.trim()) {
+    return {
+      set: true,
+      source: resolved.sources?.deviceToken || "config",
+    };
+  }
+
+  if (!trackerDir || typeof trackerDir !== "string") {
+    return { set: false, source: null };
+  }
+
+  const entry = readCloudDeviceTokenEntry(path.join(trackerDir, "cloud-device-token.json"));
+  if (!entry) return { set: false, source: null };
+
+  const expectedBase =
+    normalizeInstanceBaseUrl(resolved?.baseUrl) ||
+    (typeof resolved?.baseUrl === "string" ? resolved.baseUrl.trim() : "") ||
+    normalizeInstanceBaseUrl(config.baseUrl) ||
+    (typeof config.baseUrl === "string" ? config.baseUrl.trim() : "");
+  if (expectedBase && entry.baseUrl !== expectedBase) {
+    return { set: false, source: null };
+  }
+
+  const expectedMachine =
+    typeof config.machineId === "string" && config.machineId.trim()
+      ? config.machineId.trim()
+      : null;
+  if (expectedMachine && entry.machineId !== expectedMachine) {
+    return { set: false, source: null };
+  }
+
+  return { set: true, source: "cloud-device-token" };
+}
+
+module.exports = {
+  createCloudDeviceTokenStore,
+  resolveDeviceTokenPresence,
+  readCloudDeviceTokenEntry,
+};

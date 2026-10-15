@@ -19,6 +19,7 @@ const { probeOpenclawHookState } = require("./openclaw-hook");
 const { probeOpenclawSessionPluginState } = require("./openclaw-session-plugin");
 const { probeGrokHookState } = require("./grok-hook");
 const { resolveTrackerPaths } = require("./tracker-paths");
+const { resolveDeviceTokenPresence } = require("./cloud-device-token");
 const wsl = require("./wsl-probe");
 // TASK-011: Kiro paths inlined here to avoid pulling the ~4000-line
 // rollout module on every `tokentracker status` / `diagnostics` call.
@@ -238,7 +239,9 @@ async function collectTrackerDiagnostics({
     },
     config: {
       base_url: typeof config?.baseUrl === "string" ? config.baseUrl : null,
-      device_token: config?.deviceToken ? "set" : "unset",
+      device_token: resolveDeviceTokenPresence({ trackerDir, config: config || {} }).set
+        ? "set"
+        : "unset",
       device_id: maskId(config?.deviceId),
       installed_at: typeof config?.installedAt === "string" ? config.installedAt : null,
     },
