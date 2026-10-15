@@ -232,8 +232,7 @@ mod appimage_registration {
         );
 
         let keys = ["APPIMAGE", "HOME", "XDG_DATA_HOME", "PATH"];
-        let previous: Vec<Option<OsString>> =
-            keys.iter().map(|key| std::env::var_os(key)).collect();
+        let previous: Vec<Option<OsString>> = keys.iter().map(std::env::var_os).collect();
         // Prepend the stub directory: our fakes win the lookup, while the real
         // PATH stays reachable for the shell builtins the stubs rely on.
         let stub_path = std::env::join_paths(std::iter::once(bin_dir.clone()).chain(
