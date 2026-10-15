@@ -40,7 +40,10 @@ test("reset holds the sync lease and prepares a private credential-free marker b
   } });
   const raw = fs.readFileSync(path.join(f.trackerDir, "cloud-usage-reset.json"), "utf8");
   assert.equal(raw.includes(f.accessToken), false);
-  assert.equal(fs.statSync(path.join(f.trackerDir, "cloud-usage-reset.json")).mode & 0o777, 0o600);
+  // Windows stat exposes DOS attributes rather than POSIX permission bits.
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(path.join(f.trackerDir, "cloud-usage-reset.json")).mode & 0o777, 0o600);
+  }
   assert.equal(readCloudUsageReset(f.trackerDir).phase, "uploading");
   assert.equal(readState(f.trackerDir).offset, 0);
   assert.equal(fs.existsSync(path.join(f.trackerDir, "upload.throttle.json")), false);
