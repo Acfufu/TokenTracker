@@ -8,7 +8,7 @@ use tauri::{App, AppHandle, Manager, Runtime};
 const OPEN_ID: &str = "open-dashboard";
 const PET_ID: &str = "show-pet";
 const QUIT_ID: &str = "quit";
-const TRAY_ID: &str = "main-tray";
+const TRAY_ID: &str = "tokentracker-tray";
 
 /// How long to wait before re-publishing the menu. Long enough that the
 /// desktop's tray client has finished its initial layout exchange, short
