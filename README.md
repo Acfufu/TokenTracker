@@ -72,6 +72,10 @@ An accurate, local-first token usage and cost dashboard for **46 AI coding tools
 
 ---
 
+This project is tested with BrowserStack.
+
+---
+
 ## ⚡ Quick Start
 
 > **Requirements**: Node.js **20+** (CLI runs on macOS / Linux / Windows; native desktop app ships for macOS (menu bar), Windows (system tray) and Linux (AppImage, tray). Cursor token reading uses the system `sqlite3` CLI when available and falls back to `node:sqlite` on supported Node releases).
@@ -637,10 +641,6 @@ The Clawd character design belongs to Anthropic. This is a community project wit
 ## 🔗 Friendly Links
 
 - [LINUX DO](https://linux.do) — a developer community we like
-
-## BrowserStack
-
-This project is tested with BrowserStack.
 
 ## License
 
