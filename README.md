@@ -638,6 +638,10 @@ The Clawd character design belongs to Anthropic. This is a community project wit
 
 - [LINUX DO](https://linux.do) — a developer community we like
 
+## BrowserStack
+
+This project is tested with BrowserStack.
+
 ## License
 
 [MIT](LICENSE)
