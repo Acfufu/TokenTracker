@@ -2634,7 +2634,7 @@ async function cmdSync(argv, context = {}) {
     // usage rides on function_call records too (not only assistant messages) and
     // sub-agent logs nest one level deeper, so the resolver recurses. See the
     // parser comment in rollout.js for the cache-aware token math.
-    let workbuddyResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    let workbuddyResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0, projectBucketsQueued: 0, projectCursorUpdated: false };
     const workbuddyFiles = sourceAllowed("workbuddy")
       ? mergeBothFileSources({ resolveFiles: resolveWorkbuddyProjectFiles, env: process.env })
       : [];
@@ -2660,6 +2660,7 @@ async function cmdSync(argv, context = {}) {
           projectFiles: workbuddyFiles,
           cursors,
           queuePath,
+          projectQueuePath,
           env: process.env,
           onProgress: (p) => {
             if (!progress?.enabled) return;
@@ -2679,7 +2680,7 @@ async function cmdSync(argv, context = {}) {
     // only the home directory differs, so it reuses the WorkBuddy parser and
     // gets its own source key (and cursor namespace) so the two builds stay
     // separable instead of merging into one provider row.
-    let workbuddyAiResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    let workbuddyAiResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0, projectBucketsQueued: 0, projectCursorUpdated: false };
     const workbuddyAiFiles = sourceAllowed("workbuddy-ai")
       ? mergeBothFileSources({
           resolveFiles: (resolveEnv) => resolveWorkbuddyProjectFiles(resolveEnv, "workbuddy-ai"),
@@ -2695,6 +2696,7 @@ async function cmdSync(argv, context = {}) {
           projectFiles: workbuddyAiFiles,
           cursors,
           queuePath,
+          projectQueuePath,
           env: process.env,
           source: "workbuddy-ai",
           onProgress: (p) => {
@@ -3469,6 +3471,10 @@ async function cmdSync(argv, context = {}) {
       cursorStore.requiresCommit !== true &&
       totalParsed === (commandCodeResult.cursorUnchanged ? commandCodeResult.recordsProcessed : 0) &&
       totalBuckets === 0 &&
+      !(workbuddyResult.projectBucketsQueued > 0) &&
+      !(workbuddyAiResult.projectBucketsQueued > 0) &&
+      !workbuddyResult.projectCursorUpdated &&
+      !workbuddyAiResult.projectCursorUpdated &&
       !(grokResult.projectBucketsQueued > 0) &&
       !(commandCodeResult.projectBucketsQueued > 0) &&
       !commandCodeResult.schemaMigrated &&
@@ -5699,7 +5705,23 @@ async function repairWorkbuddyContextUsage({
   for (const [key, value] of Object.entries(tmpCursors.hourly.groupQueued || {})) {
     if (key.startsWith("workbuddy|")) nextHourly.groupQueued[key] = value;
   }
-  cursors.workbuddy = tmpCursors.workbuddy || {};
+  // This migration rebuilds totals from a temp queue using empty cursors, so
+  // `tmpCursors.workbuddy` carries no project state. Replacing the whole object
+  // would drop the project cursor while leaving the published project buckets
+  // (cursors.projectHourly and the real project queue) untouched, and the next
+  // parse would re-attribute every historical session on top of them. The
+  // migration only changes totals, so keep the project cursor as it is.
+  const previousWorkbuddyState =
+    cursors.workbuddy && typeof cursors.workbuddy === "object" ? cursors.workbuddy : {};
+  cursors.workbuddy = {
+    ...(tmpCursors.workbuddy || {}),
+    ...(previousWorkbuddyState.projectFileOffsets
+      ? { projectFileOffsets: previousWorkbuddyState.projectFileOffsets }
+      : {}),
+    ...(Array.isArray(previousWorkbuddyState.projectSeenIds)
+      ? { projectSeenIds: previousWorkbuddyState.projectSeenIds }
+      : {}),
+  };
 
   let uploadState = {};
   try { uploadState = JSON.parse(await fs.readFile(queueStatePath, "utf8")); } catch (_e) {}

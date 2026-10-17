@@ -10802,14 +10802,102 @@ function workbuddySqliteUsageSnapshot(row) {
   };
 }
 
+// WorkBuddy writes OpenAI/DeepSeek-shaped rawUsage on every LLM round-trip.
+// The totals pass and the project pass below need the same breakdown, so the
+// arithmetic lives here once. Callers treat total_tokens === 0 as "no billable
+// usage": every component is non-negative, so that is equivalent to testing
+// each field for zero.
+function workbuddyUsageDelta(rawUsage) {
+  const promptTokens = toNonNegativeInt(rawUsage.prompt_tokens);
+  const completionTokens = toNonNegativeInt(rawUsage.completion_tokens);
+  const promptDetails =
+    rawUsage.prompt_tokens_details && typeof rawUsage.prompt_tokens_details === "object"
+      ? rawUsage.prompt_tokens_details
+      : {};
+  const completionDetails =
+    rawUsage.completion_tokens_details && typeof rawUsage.completion_tokens_details === "object"
+      ? rawUsage.completion_tokens_details
+      : {};
+
+  // Cache reads are mirrored across up to three fields depending on which
+  // upstream the auto-router used; take the largest non-zero mirror.
+  const cacheRead = Math.max(
+    toNonNegativeInt(rawUsage.cache_read_input_tokens),
+    toNonNegativeInt(promptDetails.cached_tokens),
+    toNonNegativeInt(rawUsage.prompt_cache_hit_tokens),
+  );
+  const cacheCreation = toNonNegativeInt(rawUsage.cache_creation_input_tokens);
+  // prompt_tokens is the FULL prompt: subtract BOTH reads and writes so
+  // input_tokens is pure non-cached input (no double-counting cache writes).
+  const inputTokens = Math.max(0, promptTokens - cacheRead - cacheCreation);
+  // completion_tokens INCLUDES reasoning (verified: total == prompt+completion).
+  const reasoningTokens = Math.min(
+    completionTokens,
+    toNonNegativeInt(completionDetails.reasoning_tokens),
+  );
+  const outputTokens = Math.max(0, completionTokens - reasoningTokens);
+
+  return {
+    input_tokens: inputTokens,
+    cached_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreation,
+    output_tokens: outputTokens,
+    reasoning_output_tokens: reasoningTokens,
+    total_tokens: inputTokens + outputTokens + cacheRead + cacheCreation + reasoningTokens,
+    conversation_count: 1,
+  };
+}
+
+// WorkBuddy stamps `cwd` on its records rather than in a session header, and a
+// session can open with a record that lacks it while later appends omit it
+// altogether. Resolve it from a bounded prefix of the file so every record in
+// the incremental window is attributed, not just the ones that happen to carry
+// their own cwd. A file with no recoverable cwd stays outside project
+// attribution — there is nothing to attribute it to.
+async function resolveWorkbuddyFileCwd(filePath, maxScanBytes = 8 * 1024 * 1024) {
+  let stream;
+  try {
+    const stat = fssync.statSync(filePath);
+    if (stat.size <= 0) return null;
+    stream = fssync.createReadStream(filePath, {
+      start: 0,
+      end: Math.min(stat.size, maxScanBytes) - 1,
+    });
+  } catch {
+    return null;
+  }
+  let cwd = null;
+  try {
+    for await (const record of physicalJsonlRecords(stream, {
+      invalidUtf8: "record",
+      maxRecordBytes: OMP_LIKE_MAX_RECORD_BYTES,
+    })) {
+      if (!record.line || !record.line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(record.line); } catch { continue; }
+      if (entry && typeof entry === "object" && typeof entry.cwd === "string" && entry.cwd) {
+        cwd = entry.cwd;
+        break;
+      }
+    }
+  } catch {
+    // No recoverable cwd — the file stays un-attributed.
+  } finally {
+    try { stream.destroy(); } catch {}
+  }
+  return cwd;
+}
+
 async function parseWorkbuddyIncremental({
   projectFiles,
   cursors,
   queuePath,
+  projectQueuePath,
   onProgress,
   env,
   defaultModel,
   source = "workbuddy",
+  publicRepoResolver,
 } = {}) {
   await ensureDir(path.dirname(queuePath));
   // `source` doubles as the variant selector and the bucket source key, so the
@@ -10841,6 +10929,45 @@ async function parseWorkbuddyIncremental({
   );
   const detailedSessionsWithUsage = new Set();
 
+  // The shared normalizers copy the bucket maps but alias each bucket/totals
+  // object, and the enqueue helpers stamp queuedKey before appendFile runs.
+  // Give the buckets this parser can mutate private copies so a failed append
+  // leaves the caller's published state untouched — the same staging contract
+  // the Devin reader uses. Callers retry from unchanged offsets, so a polluted
+  // published state would add the same usage twice.
+  const ownsWorkbuddyBucket = (key) =>
+    (normalizeSourceInput(key.split(BUCKET_SEPARATOR)[0]) || DEFAULT_SOURCE) === variant;
+  const ownsWorkbuddyProjectBucket = (key) => {
+    // Project keys are `projectKey|source|hour`; a projectKey may itself
+    // contain the separator, so read the source segment from the right.
+    const last = key.lastIndexOf(BUCKET_SEPARATOR);
+    const prev = last > 0 ? key.lastIndexOf(BUCKET_SEPARATOR, last - 1) : -1;
+    const source = prev >= 0 ? key.slice(prev + 1, last) : "";
+    return (normalizeSourceInput(source) || DEFAULT_SOURCE) === variant;
+  };
+
+  // Project attribution runs as a second, independent pass over the same JSONL
+  // files (see "Project pass" below). It keeps its own offsets and seen-set, so
+  // an install that already has totals backfills project history on upgrade
+  // without re-counting a single token in the totals queue.
+  const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
+  const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
+  if (projectState) {
+    projectState.buckets = stageProviderBuckets(projectState.buckets, ownsWorkbuddyProjectBucket);
+  }
+  const projectTouchedBuckets = projectEnabled ? new Set() : null;
+  const projectMetaCache = projectEnabled ? new Map() : null;
+  const publicRepoCache = projectEnabled ? new Map() : null;
+  const projectSeenIds = new Set(
+    Array.isArray(workbuddyState.projectSeenIds) ? workbuddyState.projectSeenIds : [],
+  );
+  const projectFileOffsets =
+    workbuddyState.projectFileOffsets && typeof workbuddyState.projectFileOffsets === "object"
+      ? { ...workbuddyState.projectFileOffsets }
+      : {};
+  let projectBucketsQueued = 0;
+  let projectCursorUpdated = false;
+
   const allFiles = Array.isArray(projectFiles)
     ? projectFiles
     : resolveWorkbuddyProjectFiles(env || process.env, variant);
@@ -10866,10 +10993,15 @@ async function parseWorkbuddyIncremental({
       detailedSessions,
       updatedAt: new Date().toISOString(),
     };
-    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0, projectBucketsQueued: 0, projectCursorUpdated: false };
   }
 
   const hourlyState = normalizeHourlyState(cursors?.hourly);
+  hourlyState.buckets = stageProviderBuckets(hourlyState.buckets, ownsWorkbuddyBucket);
+  hourlyState.groupQueued =
+    hourlyState.groupQueued && typeof hourlyState.groupQueued === "object"
+      ? { ...hourlyState.groupQueued }
+      : {};
   const touchedBuckets = new Set();
   const cb = typeof onProgress === "function" ? onProgress : null;
   let recordsProcessed = 0;
@@ -10941,39 +11073,8 @@ async function parseWorkbuddyIncremental({
 
       recordsProcessed++;
 
-      const promptTokens = toNonNegativeInt(rawUsage.prompt_tokens);
-      const completionTokens = toNonNegativeInt(rawUsage.completion_tokens);
-      const promptDetails =
-        rawUsage.prompt_tokens_details && typeof rawUsage.prompt_tokens_details === "object"
-          ? rawUsage.prompt_tokens_details
-          : {};
-      const completionDetails =
-        rawUsage.completion_tokens_details && typeof rawUsage.completion_tokens_details === "object"
-          ? rawUsage.completion_tokens_details
-          : {};
-
-      // Cache reads are mirrored across up to three fields depending on which
-      // upstream the auto-router used; take the largest non-zero mirror.
-      const cacheRead = Math.max(
-        toNonNegativeInt(rawUsage.cache_read_input_tokens),
-        toNonNegativeInt(promptDetails.cached_tokens),
-        toNonNegativeInt(rawUsage.prompt_cache_hit_tokens),
-      );
-      const cacheCreation = toNonNegativeInt(rawUsage.cache_creation_input_tokens);
-      // prompt_tokens is the FULL prompt: subtract BOTH reads and writes so
-      // input_tokens is pure non-cached input (no double-counting cache writes).
-      const inputTokens = Math.max(0, promptTokens - cacheRead - cacheCreation);
-      // completion_tokens INCLUDES reasoning (verified: total == prompt+completion).
-      const reasoningTokens = Math.min(completionTokens, toNonNegativeInt(completionDetails.reasoning_tokens));
-      const outputTokens = Math.max(0, completionTokens - reasoningTokens);
-
-      if (
-        inputTokens === 0 &&
-        outputTokens === 0 &&
-        cacheRead === 0 &&
-        cacheCreation === 0 &&
-        reasoningTokens === 0
-      ) {
+      const delta = workbuddyUsageDelta(rawUsage);
+      if (delta.total_tokens === 0) {
         seenIds.add(messageId);
         continue;
       }
@@ -10991,17 +11092,6 @@ async function parseWorkbuddyIncremental({
         normalizeModelInput(provider.requestModelId) ||
         normalizeModelInput(entry.model) ||
         fallbackModel;
-
-      const delta = {
-        input_tokens: inputTokens,
-        cached_input_tokens: cacheRead,
-        cache_creation_input_tokens: cacheCreation,
-        output_tokens: outputTokens,
-        reasoning_output_tokens: reasoningTokens,
-        total_tokens:
-          inputTokens + outputTokens + cacheRead + cacheCreation + reasoningTokens,
-        conversation_count: 1,
-      };
 
       const bucket = getHourlyBucket(hourlyState, variant, model, bucketStart);
       addTotals(bucket.totals, delta);
@@ -11034,6 +11124,165 @@ async function parseWorkbuddyIncremental({
       mtimeMs: postStat.mtimeMs,
       ino: postStat.ino,
     };
+  }
+
+  // ── Project pass ───────────────────────────────────────────────────────
+  // WorkBuddy stamps `cwd` on its records, so unlike the trace summaries below
+  // there is nothing to infer: attribute each round-trip to the git repository
+  // its cwd belongs to. This is a second loop over the same files with its own
+  // cursor, so an install that already has totals backfills project history on
+  // upgrade without touching (or double-counting) them.
+  if (projectEnabled) {
+    for (let fileIdx = 0; fileIdx < jsonlFiles.length; fileIdx++) {
+      const filePath = jsonlFiles[fileIdx];
+      let stat;
+      try { stat = fssync.statSync(filePath); } catch { continue; }
+
+      const prevEntry = projectFileOffsets[filePath] || {};
+      const prevSize = Number(prevEntry.size) || 0;
+      const prevIno = prevEntry.ino;
+      const inodeChanged = typeof prevIno === "number" && prevIno !== stat.ino;
+      const truncated = stat.size < prevSize;
+      const startOffset = truncated || inodeChanged ? 0 : prevSize;
+      if (stat.size <= startOffset) continue;
+
+      // cwd is fixed for a session file's lifetime. Reuse the resolved value
+      // while it is the same file, otherwise read it from the file head — not
+      // from the incremental window, which may hold only appends that omit it.
+      // Truncation (same inode, smaller size) must drop the cached cwd: the
+      // replacement transcript may belong to a different checkout.
+      let cwd =
+        !inodeChanged && !truncated && typeof prevEntry.cwd === "string"
+          ? prevEntry.cwd
+          : null;
+
+      // No recoverable cwd yet: do not advance past history. A later append
+      // may stamp cwd, and early records must still be attributable then.
+      // Check the unchanged-probe cache BEFORE the head scan so idle syncs do
+      // not re-read up to 8 MiB of JSONL on every pass.
+      if (
+        !cwd &&
+        Number(prevEntry.noCwdProbedSize) === stat.size &&
+        prevEntry.ino === stat.ino &&
+        Number(prevEntry.size) === startOffset
+      ) {
+        continue;
+      }
+      if (!cwd) cwd = await resolveWorkbuddyFileCwd(filePath);
+      if (!cwd) {
+        projectCursorUpdated = true;
+        projectFileOffsets[filePath] = {
+          size: startOffset,
+          mtimeMs: stat.mtimeMs,
+          ino: stat.ino,
+          noCwdProbedSize: stat.size,
+        };
+        continue;
+      }
+
+      let projectRef = null;
+      let projectKey = null;
+      const projectContext = await resolveProjectContextForPath({
+        startDir: wsl.mapWslCwdToUnc(cwd, filePath),
+        projectMetaCache,
+        publicRepoCache,
+        publicRepoResolver,
+        projectState,
+      });
+      projectRef = projectContext?.projectRef || null;
+      projectKey = projectContext?.projectKey || null;
+
+      // cwd resolved but the repo is not yet public_verified (or has no git
+      // checkout): keep the offset unadvanced so a later sync can retry, but
+      // do not JSON-parse the transcript on every pass — there is nothing to
+      // attribute until both identifiers exist.
+      if (!projectKey || !projectRef) {
+        projectCursorUpdated = true;
+        projectFileOffsets[filePath] = {
+          size: startOffset,
+          mtimeMs: stat.mtimeMs,
+          ino: stat.ino,
+          cwd,
+        };
+        continue;
+      }
+
+      const committedEndOffset = await scanOmpLikeTranscript(
+        filePath,
+        startOffset,
+        OMP_LIKE_MAX_RECORD_BYTES,
+        (entry) => {
+          // Mirror the totals pass: a JSON null / non-object line must not
+          // abort the whole WorkBuddy parse (and strand both cursors).
+          if (!entry || typeof entry !== "object") return;
+
+          const provider = entry.providerData;
+          const rawUsage = provider && typeof provider === "object" ? provider.rawUsage : null;
+          if (!rawUsage || typeof rawUsage !== "object") return;
+
+          // Mirror the totals pass's suppression rules so the project queue
+          // never reports a session the totals queue deliberately skipped.
+          const sessionId =
+            typeof entry.sessionId === "string" && entry.sessionId
+              ? entry.sessionId
+              : path.basename(filePath, ".jsonl");
+          const sqliteSession = sqliteSessions[sessionId];
+          if (sqliteSession?.detailed || tracedSessionIds.has(sessionId)) return;
+
+          const tsMs =
+            Number.isFinite(Number(entry.timestamp)) && Number(entry.timestamp) > 0
+              ? Number(entry.timestamp)
+              : null;
+          if (tsMs == null) return;
+
+          // Same response-level id preference as the totals pass, so both
+          // queues dedup on identical keys.
+          const messageId =
+            typeof provider?.messageId === "string" && provider.messageId
+              ? provider.messageId
+              : typeof entry.uuid === "string" && entry.uuid
+                ? entry.uuid
+                : typeof entry.id === "string" && entry.id
+                  ? entry.id
+                  : `${sessionId}:${tsMs}`;
+          if (projectSeenIds.has(messageId)) return;
+          projectSeenIds.add(messageId);
+          // The totals pass also registers the raw entry id so an older or
+          // rewritten copy of the same record cannot be counted twice; the
+          // project pass has to keep the same alias.
+          if (typeof entry.id === "string" && entry.id && entry.id !== messageId) {
+            projectSeenIds.add(entry.id);
+          }
+
+          const delta = workbuddyUsageDelta(rawUsage);
+          if (delta.total_tokens === 0) return;
+
+          const bucketStart = toUtcHalfHourStart(new Date(tsMs).toISOString());
+          if (!bucketStart) return;
+
+          const projectBucket = getProjectBucket(
+            projectState,
+            projectKey,
+            source,
+            bucketStart,
+            projectRef,
+          );
+          addTotals(projectBucket.totals, delta);
+          projectTouchedBuckets.add(projectBucketKey(projectKey, source, bucketStart));
+        },
+      );
+
+      // Commit only past records that were read in full: a record appended
+      // while this pass was running, or an unfinished tail line, has to stay
+      // visible to the next sync. Only advance after successful attribution.
+      projectCursorUpdated = true;
+      projectFileOffsets[filePath] = {
+        size: committedEndOffset,
+        mtimeMs: stat.mtimeMs,
+        ino: stat.ino,
+        cwd,
+      };
+    }
   }
 
   // Trace summaries are a fallback for sessions whose JSONL has no detailed
@@ -11294,6 +11543,23 @@ async function parseWorkbuddyIncremental({
       ? tracedSessionArr.slice(tracedSessionArr.length - 10_000)
       : tracedSessionArr;
 
+  const projectSeenArr = Array.from(projectSeenIds);
+  const cappedProjectSeenIds =
+    projectSeenArr.length > 10_000
+      ? projectSeenArr.slice(projectSeenArr.length - 10_000)
+      : projectSeenArr;
+
+  // Publish only after both appends succeed: a throw here leaves `cursors`
+  // untouched, so a retry re-derives the same contribution from the same
+  // offsets instead of adding it on top of a half-applied state.
+  projectBucketsQueued = projectEnabled
+    ? await enqueueTouchedProjectBuckets({
+        projectQueuePath,
+        projectState,
+        projectTouchedBuckets,
+      })
+    : 0;
+
   const bucketsQueued = await enqueueTouchedBuckets({
     queuePath,
     hourlyState,
@@ -11302,6 +11568,10 @@ async function parseWorkbuddyIncremental({
   const updatedAt = new Date().toISOString();
   hourlyState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
+  if (projectState) {
+    projectState.updatedAt = updatedAt;
+    cursors.projectHourly = projectState;
+  }
   cursors[variant] = {
     ...workbuddyState,
     seenIds: cappedSeen,
@@ -11310,10 +11580,22 @@ async function parseWorkbuddyIncremental({
     fileOffsets,
     sqliteSessions: cappedSqliteSessions,
     detailedSessions: cappedDetailedSessions,
+    ...(projectEnabled
+      ? {
+          projectSeenIds: cappedProjectSeenIds,
+          projectFileOffsets,
+        }
+      : {}),
     updatedAt,
   };
 
-  return { recordsProcessed, eventsAggregated, bucketsQueued };
+  return {
+    recordsProcessed,
+    eventsAggregated,
+    bucketsQueued,
+    projectBucketsQueued,
+    projectCursorUpdated: projectEnabled && projectCursorUpdated,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14151,14 +14433,14 @@ function devinStringMap(value) {
 // Stage only the bucket objects this parser can mutate. The shared
 // normalizers copy the bucket maps but alias each bucket/totals object, and
 // the enqueue helpers stamp queuedKey before appendFile runs — so a failed
-// append used to leave the caller's published state polluted. Only
-// devin-owned entries get private copies; every other provider's buckets
+// append used to leave the caller's published state polluted. Only entries
+// the calling parser owns get private copies; every other provider's buckets
 // stay shared read-only references.
-function stageDevinBuckets(buckets, isDevinBucket) {
+function stageProviderBuckets(buckets, isOwnedBucket) {
   const staged = {};
   for (const [key, bucket] of Object.entries(buckets || {})) {
     staged[key] =
-      bucket && typeof bucket === "object" && isDevinBucket(key, bucket)
+      bucket && typeof bucket === "object" && isOwnedBucket(key, bucket)
         ? {
             ...bucket,
             totals:
@@ -14247,7 +14529,7 @@ async function parseDevinIncremental({
   // rows recover either queue. Unrelated providers' buckets stay shared
   // read-only references (this parser never writes their keys).
   const hourlyState = normalizeHourlyState(cursors?.hourly);
-  hourlyState.buckets = stageDevinBuckets(
+  hourlyState.buckets = stageProviderBuckets(
     hourlyState.buckets,
     (key) =>
       (normalizeSourceInput(parseBucketKey(key).source) || DEFAULT_SOURCE) ===
@@ -14266,7 +14548,7 @@ async function parseDevinIncremental({
   if (projectState) {
     // Project bucket keys are `projectKey|source|hourStart`; this parser only
     // ever looks up keys whose middle segment is the devin source.
-    projectState.buckets = stageDevinBuckets(projectState.buckets, (key) => {
+    projectState.buckets = stageProviderBuckets(projectState.buckets, (key) => {
       const last = key.lastIndexOf(BUCKET_SEPARATOR);
       const prev = last > 0 ? key.lastIndexOf(BUCKET_SEPARATOR, last - 1) : -1;
       const source = prev >= 0 ? key.slice(prev + 1, last) : "";
