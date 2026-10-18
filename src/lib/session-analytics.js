@@ -1915,7 +1915,7 @@ function groupCodexFiles(filePaths) {
   const ordered = [];
   const bySession = new Map();
   for (const filePath of [...new Set(filePaths || [])]) {
-    const id = path.basename(filePath).match(/([0-9a-f-]{36})\.jsonl$/i)?.[1] || filePath;
+    const id = path.basename(filePath).match(/([0-9a-f-]{36})\.jsonl(?:\.zstd?)?$/i)?.[1] || filePath;
     let group = bySession.get(id);
     if (!group) {
       group = [];

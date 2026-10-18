@@ -79,6 +79,7 @@ const {
   resolveZedDbPath,
   resolveGooseDbPath,
   listRolloutFilesDeep,
+  readCodexRolloutSnapshot,
   filterColdCodexRolloutFiles,
   bucketKey,
 } = require("../src/lib/rollout");
@@ -510,6 +511,320 @@ test("listRolloutFilesDeep finds flat archived_sessions files the strict scanner
 
     const found = await listRolloutFilesDeep(tmp);
     assert.deepEqual(found.sort(), [flat, nested].sort());
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+async function compressZstdForTest(buf) {
+  // Node >=22.15 has zlib.zstdCompressSync; Node 20 (engines.node) falls back
+  // to @mongodb-js/zstd, matching production decodeDshZstd.
+  const zlib = require("node:zlib");
+  if (typeof zlib.zstdCompressSync === "function") return zlib.zstdCompressSync(buf);
+  const { compress } = require("@mongodb-js/zstd");
+  return Buffer.from(await compress(buf));
+}
+
+test("compressed Codex archives are discovered and counted once (issue #817)", async () => {
+  // Newer Codex compresses older sessions to rollout-*.jsonl.zst, both under
+  // sessions/** and flat in archived_sessions/. The scanner must discover
+  // them, decode via the shared DSH zstd machinery, and dedup by
+  // sessionUUID:timestamp so a re-sync is a no-op.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-"));
+  try {
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const usage = { input_tokens: 100, cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0, total_tokens: 150 };
+    const lines = [
+      JSON.stringify({ timestamp: "2026-06-09T10:00:00.000Z", type: "session_meta", payload: { id: uuid, cwd: "/tmp/proj" } }),
+      buildTokenCountLine({ ts: "2026-06-09T10:01:00.000Z", last: usage, total: usage }),
+    ];
+    const text = lines.join("\n") + "\n";
+    const compressed = await compressZstdForTest(Buffer.from(text, "utf8"));
+
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const zstPath = path.join(archiveDir, `rollout-2026-06-09T10-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(zstPath, compressed);
+
+    const found = await listRolloutFilesDeep(archiveDir);
+    assert.ok(found.includes(zstPath), `compressed archive must be discovered, got ${JSON.stringify(found)}`);
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const first = await parseRolloutIncremental({ rolloutFiles: [zstPath], cursors, queuePath, source: "codex" });
+    assert.equal(first.eventsAggregated, 1, "compressed archive must contribute its token_count event");
+    assert.equal(cursors.files[zstPath].offset, (await fs.stat(zstPath)).size, "cursor pins the compressed size");
+
+    const second = await parseRolloutIncremental({ rolloutFiles: [zstPath], cursors, queuePath, source: "codex" });
+    assert.equal(second.eventsAggregated, 0, "unchanged archive must not re-count");
+    assert.equal(second.filesProcessed, 0, "unchanged archive must be skipped");
+
+    // Multi-frame archives (concatenated zstd frames) must decode fully.
+    const multiPath = path.join(archiveDir, `rollout-2026-06-10T10-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(multiPath, Buffer.concat([
+      await compressZstdForTest(Buffer.from(text.slice(0, 40), "utf8")),
+      await compressZstdForTest(Buffer.from(text.slice(40), "utf8")),
+    ]));
+    const foundMulti = await listRolloutFilesDeep(archiveDir);
+    assert.ok(foundMulti.includes(multiPath), "multi-frame archive must be discovered");
+    const cursors2 = { version: 1, files: {}, updatedAt: null };
+    const multi = await parseRolloutIncremental({
+      rolloutFiles: [multiPath], cursors: cursors2, queuePath: path.join(tmp, "queue2.jsonl"), source: "codex",
+    });
+    assert.equal(multi.eventsAggregated, 1, "multi-frame archive must decode all events");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("malformed compressed Codex archive does not abort the sync (issue #817)", async () => {
+  // A truncated .zst must return null from the snapshot reader so the sync
+  // loop keeps the prior cursor and continues with later rollout files.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-bad-"));
+  try {
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const badPath = path.join(archiveDir, `rollout-2026-06-09T10-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(badPath, Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00])); // truncated zstd magic+frame
+
+    const usage = { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 15 };
+    const goodPath = path.join(archiveDir, `rollout-2026-06-09T11-00-00-${uuid}.jsonl`);
+    await fs.writeFile(
+      goodPath,
+      [
+        JSON.stringify({ timestamp: "2026-06-09T11:00:00.000Z", type: "session_meta", payload: { id: uuid, cwd: "/tmp/proj" } }),
+        buildTokenCountLine({ ts: "2026-06-09T11:01:00.000Z", last: usage, total: usage }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    assert.equal(await readCodexRolloutSnapshot(badPath), null, "malformed archive must yield null");
+
+    const priorCursor = {
+      inode: 424242,
+      offset: 128,
+      lastTotal: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+      tokenUsageBaselines: null,
+      lastModel: "gpt-5",
+      lastServiceTier: null,
+      modelAttributionState: null,
+      updatedAt: "2026-06-09T09:00:00.000Z",
+    };
+    const cursors = { version: 1, files: { [badPath]: priorCursor }, updatedAt: null };
+    const result = await parseRolloutIncremental({
+      rolloutFiles: [badPath, goodPath],
+      cursors,
+      queuePath: path.join(tmp, "queue.jsonl"),
+      source: "codex",
+    });
+    assert.equal(result.eventsAggregated, 1, "sibling jsonl must still be parsed after a bad archive");
+    assert.deepEqual(
+      cursors.files[badPath],
+      priorCursor,
+      "soft-fail must leave the prior archive cursor untouched even when inode changed",
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("malformed compressed Codex archive throws under strict rebuild policy (issue #817)", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-strict-"));
+  try {
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const badPath = path.join(archiveDir, `rollout-2026-06-09T10-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(badPath, Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00]));
+    await assert.rejects(
+      () => parseRolloutIncremental({
+        rolloutFiles: [badPath],
+        cursors: { version: 1, files: {}, updatedAt: null },
+        queuePath: path.join(tmp, "queue.jsonl"),
+        source: "codex",
+        invalidRecordPolicy: "throw",
+      }),
+      /unreadable Codex compressed archive/,
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("compressed Codex project-only rescan keeps compressed-size cursor (issue #817)", async () => {
+  // After a full sync, an expired project context must re-read cwd via the
+  // snapshot decoder — never as raw compressed bytes — and leave the cursor
+  // pinned to the compressed size so the next unchanged check still hits.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-proj-"));
+  try {
+    const repoRoot = path.join(tmp, "repo");
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, ".git", "config"),
+      `[remote "origin"]\n\turl = https://github.com/acme/alpha.git\n`,
+      "utf8",
+    );
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const usage = {
+      input_tokens: 2,
+      cached_input_tokens: 0,
+      output_tokens: 3,
+      reasoning_output_tokens: 0,
+      total_tokens: 5,
+    };
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-01-26T00:00:00.000Z",
+        type: "session_meta",
+        payload: { id: uuid, cwd: repoRoot },
+      }),
+      buildTokenCountLine({ ts: "2026-01-26T00:10:00.000Z", last: usage, total: usage }),
+    ].join("\n") + "\n";
+    const compressed = await compressZstdForTest(Buffer.from(text, "utf8"));
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const rolloutPath = path.join(archiveDir, `rollout-2026-01-26T00-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(rolloutPath, compressed);
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const first = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath],
+      cursors,
+      queuePath,
+      projectQueuePath,
+      source: "codex",
+    });
+    assert.equal(first.eventsAggregated, 1);
+    const compressedSize = compressed.length;
+    assert.equal(cursors.files[rolloutPath].offset, compressedSize);
+    assert.equal(cursors.files[rolloutPath].projectOffset, compressedSize);
+
+    await fs.writeFile(path.join(repoRoot, ".git", "config"), "", "utf8");
+    const second = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath],
+      cursors,
+      queuePath,
+      projectQueuePath,
+      source: "codex",
+    });
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal(cursors.files[rolloutPath].offset, compressedSize,
+      "project-only rescan must not rewrite cursor to a decompressed newline offset");
+    assert.equal(cursors.files[rolloutPath].projectOffset, compressedSize);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("compressed Codex archive growth does not inflate totals (issue #817)", async () => {
+  // Same inode, larger compressed bytes: must full-rescan without retaining
+  // lastTotal, or previously counted events are applied again.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-grow-"));
+  try {
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const rolloutPath = path.join(archiveDir, `rollout-2026-06-09T10-00-00-${uuid}.jsonl.zst`);
+
+    function linesFor(totals) {
+      return totals.map((total, index) => {
+        const ts = `2026-06-09T10:0${index}:00.000Z`;
+        const last = index === 0
+          ? total
+          : {
+              input_tokens: total.input_tokens - totals[index - 1].input_tokens,
+              cached_input_tokens: 0,
+              output_tokens: total.output_tokens - totals[index - 1].output_tokens,
+              reasoning_output_tokens: 0,
+              total_tokens: total.total_tokens - totals[index - 1].total_tokens,
+            };
+        return [
+          index === 0
+            ? JSON.stringify({ timestamp: ts, type: "session_meta", payload: { id: uuid, cwd: "/tmp/proj" } })
+            : null,
+          buildTokenCountLine({ ts, last, total }),
+        ].filter(Boolean).join("\n");
+      }).join("\n") + "\n";
+    }
+
+    const firstTotals = [
+      { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 100 },
+      { input_tokens: 200, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 200 },
+    ];
+    await fs.writeFile(rolloutPath, await compressZstdForTest(Buffer.from(linesFor(firstTotals), "utf8")));
+
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const first = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath], cursors, queuePath, source: "codex",
+    });
+    assert.equal(first.eventsAggregated, 2);
+
+    const grownTotals = [
+      ...firstTotals,
+      { input_tokens: 350, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 350 },
+    ];
+    // Rewrite in place (same path); inode may or may not change on this FS —
+    // force same-inode semantics by restoring the cursor inode after write.
+    const prevInode = cursors.files[rolloutPath].inode;
+    await fs.writeFile(rolloutPath, await compressZstdForTest(Buffer.from(linesFor(grownTotals), "utf8")));
+    cursors.files[rolloutPath].inode = prevInode;
+
+    const second = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath], cursors, queuePath, source: "codex",
+    });
+    assert.equal(second.eventsAggregated, 1, "only the new event should aggregate");
+
+    const queued = (await fs.readFile(queuePath, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+    const latest = queued[queued.length - 1];
+    assert.equal(latest.total_tokens, 350, "lifetime total must be 350 not 450");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("unchanged compressed archive with publicRepoResolver does not inflate (issue #817)", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-817-resolver-"));
+  try {
+    const uuid = "019c26ca-e6bb-7e00-b33a-2ac67a11ddb9";
+    const archiveDir = path.join(tmp, "archived_sessions");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const usage = { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 100 };
+    const usage2 = { input_tokens: 200, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 200 };
+    const textBody = [
+      JSON.stringify({ timestamp: "2026-06-09T10:00:00.000Z", type: "session_meta", payload: { id: uuid, cwd: "/tmp/proj" } }),
+      buildTokenCountLine({ ts: "2026-06-09T10:01:00.000Z", last: usage, total: usage }),
+      buildTokenCountLine({
+        ts: "2026-06-09T10:02:00.000Z",
+        last: {
+          input_tokens: 100, cached_input_tokens: 0, output_tokens: 0,
+          reasoning_output_tokens: 0, total_tokens: 100,
+        },
+        total: usage2,
+      }),
+    ].join("\n") + "\n";
+    const rolloutPath = path.join(archiveDir, `rollout-2026-06-09T10-00-00-${uuid}.jsonl.zst`);
+    await fs.writeFile(rolloutPath, await compressZstdForTest(Buffer.from(textBody, "utf8")));
+
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const resolver = async () => ({ owner: "acme", name: "proj", host: "github.com" });
+
+    await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath], cursors, queuePath, projectQueuePath, source: "codex",
+      publicRepoResolver: resolver,
+    });
+    const before = cursors.files[rolloutPath].lastTotal.total_tokens;
+    await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath], cursors, queuePath, projectQueuePath, source: "codex",
+      publicRepoResolver: resolver,
+    });
+    assert.equal(cursors.files[rolloutPath].lastTotal.total_tokens, before);
+    assert.equal(before, 200);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

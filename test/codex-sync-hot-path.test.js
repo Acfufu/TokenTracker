@@ -227,7 +227,7 @@ test("v2 cold filtering batches shard decisions and loads by day directory", asy
 
   const filtered = await filterColdCodexRolloutFiles({
     rolloutFiles,
-    cursors: { version: 1, files: {}, codexDayInventoryCache: { version: 1, days: {} } },
+    cursors: { version: 1, files: {}, codexDayInventoryCache: { version: 2, days: {} } },
     codexCursorStore,
     nowMs: Date.UTC(2030, 5, 2, 12, 0, 0),
     recentDays: 2,
@@ -259,7 +259,7 @@ test("v2 cold filtering parses a grown recent rollout even when its day is skipp
         [eofPath]: { inode: 2, offset: 100, projectOffset: 100 },
         [activePath]: { inode: 3, offset: 10, projectOffset: 10 },
       },
-      codexDayInventoryCache: { version: 1, days: {} },
+      codexDayInventoryCache: { version: 2, days: {} },
     };
     const calls = { skip: 0 };
     const codexCursorStore = {
@@ -317,7 +317,7 @@ test("v2 cold filtering discards partial skip decisions after generation fallbac
 
   const filtered = await filterColdCodexRolloutFiles({
     rolloutFiles,
-    cursors: { version: 1, files: {}, codexDayInventoryCache: { version: 1, days: {} } },
+    cursors: { version: 1, files: {}, codexDayInventoryCache: { version: 2, days: {} } },
     codexCursorStore,
     diagnostics,
     nowMs: Date.UTC(2030, 5, 2, 12, 0, 0),
@@ -761,7 +761,7 @@ test("source-scoped sync preserves audit state and reports the actual cursor com
       version: 1,
       files: {},
       codexColdScanAudit: expectedAuditState,
-      codexDayInventoryCache: { version: 1, days: {} },
+      codexDayInventoryCache: { version: 2, days: {} },
       hourly: {
         version: 3,
         buckets: {},
