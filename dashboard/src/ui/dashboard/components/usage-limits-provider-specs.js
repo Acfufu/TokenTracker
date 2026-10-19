@@ -99,6 +99,9 @@ export const PROVIDER_LIMIT_SPECS = {
     // Grok unified billing is weekly for SuperGrok / free-tier accounts and
     // monthly for legacy credit counters. period_type comes from the billing
     // API (USAGE_PERIOD_TYPE_WEEKLY / MONTHLY) via grok-limits.js.
+    // Product rows are shares of that same pool, not separate quotas.
+    // They must not get windowSeconds: pace would treat a 12% share as its
+    // own quota and project an ETA to 100%.
     windows(data) {
       const period = typeof data.period_type === "string" ? data.period_type : null;
       const primaryLabelKey =
@@ -117,6 +120,7 @@ export const PROVIDER_LIMIT_SPECS = {
           windowSeconds,
         },
         { key: "ondemand", labelKey: "limits.label.grok_ondemand", window: data.secondary_window },
+        ...grokProductWindowSpecs(data),
       ];
     },
   },
@@ -257,6 +261,35 @@ export const PROVIDER_LIMIT_SPECS = {
   },
 };
 
+const GROK_PRODUCT_LABEL_KEYS = {
+  GrokBuild: "limits.label.grok_build",
+  GrokBot: "limits.label.grok_bot",
+  GrokChat: "limits.label.grok_chat",
+  GrokImagine: "limits.label.grok_imagine",
+  Cursor: "limits.label.grok_cursor",
+};
+
+/** Product-share rows. Known ids use copy keys; a future product uses the server label. */
+function grokProductWindowSpecs(data) {
+  if (!Array.isArray(data?.products)) return [];
+  const rows = [];
+  for (const entry of data.products) {
+    const product = typeof entry?.product === "string" ? entry.product : "";
+    if (!product || !entry?.window) continue;
+    const labelKey = GROK_PRODUCT_LABEL_KEYS[product];
+    const label = typeof entry.label === "string" ? entry.label.trim() : "";
+    if (!labelKey && !label) continue;
+    rows.push({
+      key: `product-${product}`,
+      ...(labelKey ? { labelKey } : { label }),
+      window: entry.window,
+      // A share of the pool. Remaining mode must not redraw it as 100 − used.
+      share: true,
+    });
+  }
+  return rows;
+}
+
 /** Static copy() anchors for validate:copy — labels resolve at runtime via spec.labelKey. */
 export function usageLimitsLabelCopyAnchor() {
   return [
@@ -286,6 +319,11 @@ export function usageLimitsLabelCopyAnchor() {
     copy("limits.label.grok_week"),
     copy("limits.label.grok_day"),
     copy("limits.label.grok_ondemand"),
+    copy("limits.label.grok_build"),
+    copy("limits.label.grok_bot"),
+    copy("limits.label.grok_chat"),
+    copy("limits.label.grok_imagine"),
+    copy("limits.label.grok_cursor"),
     copy("limits.label.antigravity_claude_weekly"),
     copy("limits.label.antigravity_claude_5h"),
     copy("limits.label.antigravity_gemini_weekly"),

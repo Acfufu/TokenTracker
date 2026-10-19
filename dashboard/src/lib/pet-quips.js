@@ -369,11 +369,27 @@ function zcodeQuipWindows(zcode) {
   return [["GLM-5.2", zcode?.primary_window], ["GLM-5 Turbo", zcode?.secondary_window], ["Other", zcode?.tertiary_window]];
 }
 
+const GROK_PRODUCT_LABEL_KEYS = {
+  GrokBuild: "limits.label.grok_build",
+  GrokBot: "limits.label.grok_bot",
+  GrokChat: "limits.label.grok_chat",
+  GrokImagine: "limits.label.grok_imagine",
+  Cursor: "limits.label.grok_cursor",
+};
+
+/** Limits-page label for a Grok product share. Known ids use copy(); a new id uses the server label. */
+function grokProductPetLabel(entry) {
+  const product = typeof entry?.product === "string" ? entry.product : "";
+  const key = GROK_PRODUCT_LABEL_KEYS[product];
+  if (key) return copy(key);
+  return typeof entry?.label === "string" ? entry.label.trim() : "";
+}
+
 function collectPetLimitRows(limits) {
   if (!limits || typeof limits !== "object") return [];
 
   const rows = [];
-  const addWindow = (providerId, windowLabel, provider, window, getUsed, getReset = (w) => w?.reset_at) => {
+  const addWindow = (providerId, windowLabel, provider, window, getUsed, getReset = (w) => w?.reset_at, extra = null) => {
     if (provider?.configured !== true || provider?.error != null || !window) return;
     const raw = Number(getUsed(window));
     if (!Number.isFinite(raw)) return;
@@ -384,6 +400,7 @@ function collectPetLimitRows(limits) {
       window: windowLabel,
       usedPercent: Math.min(100, Math.max(0, raw)),
       resetAt: getReset(window),
+      ...(extra && typeof extra === "object" ? extra : {}),
     });
   };
   const addGeneric = (providerId, provider, windows) => {
@@ -414,6 +431,13 @@ function collectPetLimitRows(limits) {
   addGeneric("kimi", limits.kimi, [["Weekly", limits.kimi?.primary_window], ["5h", limits.kimi?.secondary_window], ["Total", limits.kimi?.tertiary_window]]);
   addGeneric("kiro", limits.kiro, [["Month", limits.kiro?.primary_window], ["Bonus", limits.kiro?.secondary_window]]);
   addGeneric("grok", limits.grok, [["Month", limits.grok?.primary_window], ["On-demand", limits.grok?.secondary_window]]);
+  if (limits.grok?.configured === true && limits.grok?.error == null && Array.isArray(limits.grok.products)) {
+    for (const entry of limits.grok.products) {
+      const label = grokProductPetLabel(entry);
+      if (!label) continue;
+      addWindow("grok", label, limits.grok, entry?.window, (w) => w?.used_percent, (w) => w?.reset_at, { share: true });
+    }
+  }
   addGeneric("copilot", limits.copilot, [["Premium", limits.copilot?.primary_window], ["Chat", limits.copilot?.secondary_window]]);
   addGeneric("antigravity", limits.antigravity, [
     ["Claude weekly", limits.antigravity?.primary_window],
@@ -472,7 +496,8 @@ export function getPetLimitDisplay(locale, reading, displayMode = "used") {
   if (!reading) return null;
   const loc = normalizePetLocale(locale);
   const raw = Math.min(100, Math.max(0, Number(reading.usedPercent) || 0));
-  const remaining = displayMode === "remaining";
+  // A product share stays the used percent. 13 points of the pool is not 87 left.
+  const remaining = displayMode === "remaining" && reading.share !== true;
   const value = Math.round(remaining ? 100 - raw : raw);
   const copy = {
     en: {

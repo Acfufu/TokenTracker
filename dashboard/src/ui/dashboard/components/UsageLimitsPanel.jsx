@@ -149,9 +149,11 @@ function buildWindowHoverDetail(spec, pace, mode) {
 // Shared with the session browser; see ui/components/HoverTooltip.jsx.
 const Tooltip = HoverTooltip;
 
-function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePercent = null, paceOver = false, title = null }) {
+function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePercent = null, paceOver = false, title = null, share = false }) {
   const rawUsed = Math.max(0, Math.min(100, Number(pct) || 0));
-  const displayPct = mode === LIMIT_DISPLAY_MODES.REMAINING ? 100 - rawUsed : rawUsed;
+  // A product share is points of the pool, not a quota that fills at 100%.
+  const displayPct = !share && mode === LIMIT_DISPLAY_MODES.REMAINING ? 100 - rawUsed : rawUsed;
+  const colorMode = share ? LIMIT_DISPLAY_MODES.USED : mode;
   const rounded = Math.round(displayPct);
   // Sub-1% still matters (e.g. team pool); keep bar/text from collapsing to 0%.
   const widthPct = displayPct > 0 && rounded === 0 ? Math.max(displayPct, 0.35) : displayPct;
@@ -172,7 +174,7 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
       </span>
       <div className="relative flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
         <div
-          className={`${barColor(displayPct, mode)} rounded-full h-full transition-[width] duration-500 ease-out`}
+          className={`${barColor(displayPct, colorMode)} rounded-full h-full transition-[width] duration-500 ease-out`}
           style={{ width: `${widthPct}%`, minWidth: displayPct > 0 ? "3px" : 0 }}
         />
         {paceX != null && (
@@ -206,8 +208,8 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
  */
 function explainLineFor(spec, pace, mode) {
   const label = spec.label ?? copy(spec.labelKey);
-  const remaining = mode === LIMIT_DISPLAY_MODES.REMAINING;
-  // In remaining mode every percentage flips to "how much is left".
+  // Remaining mode flips a real quota to "how much is left". A product share stays the used percent.
+  const remaining = mode === LIMIT_DISPLAY_MODES.REMAINING && spec.share !== true;
   const projection = (usedPct) => (remaining ? 100 - usedPct : usedPct);
   // No trusted window length (monthly / billing cycle): just the usage.
   if (pace.expectedPercent == null) {
@@ -522,6 +524,7 @@ function LimitWindowSection({ rows, mode, extra = null }) {
           pct={readWindowPct(spec.window, spec.pctField)}
           reset={formatReset(readWindowReset(spec.window, spec.resetField))}
           mode={mode}
+          share={spec.share === true}
           pacePercent={pace.pacePercent}
           paceOver={pace.paceOver}
           title={buildWindowHoverDetail(spec, pace, mode)}

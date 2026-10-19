@@ -449,6 +449,14 @@ struct GeminiLimits: Codable, Equatable {
     }
 }
 
+/// One product's share of the Grok pool (Grok Build, Grok Bot, Imagine, …).
+/// `window.usedPercent` is points of the shared cap, not a separate quota.
+struct GrokProductUsage: Codable, Equatable {
+    let product: String?
+    let label: String?
+    let window: GenericLimitWindow?
+}
+
 struct GrokLimits: Codable, Equatable {
     let configured: Bool
     let error: String?
@@ -457,9 +465,11 @@ struct GrokLimits: Codable, Equatable {
     let periodType: String?
     let primaryWindow: GenericLimitWindow?
     let secondaryWindow: GenericLimitWindow?
+    /// Absent on payloads from older servers.
+    let products: [GrokProductUsage]?
 
     enum CodingKeys: String, CodingKey {
-        case configured, error
+        case configured, error, products
         case planLabel = "plan_label"
         case periodType = "period_type"
         case primaryWindow = "primary_window"

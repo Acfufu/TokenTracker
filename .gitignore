@@ -42,6 +42,7 @@ TokenTrackerBar/*.xcarchive
 # AI / IDE tooling (created locally by assistants)
 .agent/
 .agents/
+.reviews/
 
 .claude/
 

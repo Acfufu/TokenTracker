@@ -90,6 +90,21 @@ enum Strings {
         default: return grokMonthLabel
         }
     }
+
+    /// Product-share row. Known billing ids use the same names as the dashboard;
+    /// anything else falls back to the server label.
+    static func grokProductLabel(product: String, fallback: String?) -> String {
+        switch product {
+        case "GrokBuild": return t("Grok Build", "Grok Build", "Grok Build", "Grok Build", "Grok Build")
+        case "GrokBot": return cursorGrokBotLabel
+        case "GrokChat": return t("Chat", "聊天", "聊天", "チャット", "채팅")
+        case "GrokImagine": return t("Imagine", "Imagine", "Imagine", "Imagine", "Imagine")
+        case "Cursor": return t("Cursor", "Cursor", "Cursor", "Cursor", "Cursor")
+        default:
+            let trimmed = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? product : trimmed
+        }
+    }
     static var limitResetNow: String { t("now", "现在", "現在", "今", "지금") }
     static func kimiParallelLabel(_ count: Int) -> String {
         t("Parallel: \(count)", "并发：\(count)", "併發：\(count)", "並列：\(count)", "병렬: \(count)")

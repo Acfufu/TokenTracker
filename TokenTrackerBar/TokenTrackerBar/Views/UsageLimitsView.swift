@@ -327,7 +327,7 @@ struct UsageLimitsView: View {
             }
             VStack(spacing: 4) {
                 ForEach(specs) { spec in
-                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate)
+                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, share: spec.share)
                 }
                 if let sub = subscription {
                     subscriptionRow(for: sub)
@@ -386,14 +386,14 @@ struct UsageLimitsView: View {
 
     // MARK: - Window specs (one source of truth for rows + the explain popover)
 
-    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, iso: String?) -> LimitWindowSpec {
+    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, iso: String?, share: Bool = false) -> LimitWindowSpec {
         let date = resetDate(iso: iso)
-        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString))
+        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString), share: share)
     }
 
-    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, epoch: Int?) -> LimitWindowSpec {
+    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, epoch: Int?, share: Bool = false) -> LimitWindowSpec {
         let date = resetDate(epoch: epoch)
-        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString))
+        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString), share: share)
     }
 
     private func claudeSpecs(_ c: ClaudeLimits) -> [LimitWindowSpec] {
@@ -518,6 +518,13 @@ struct UsageLimitsView: View {
             s.append(makeSpec(Strings.grokPrimaryLabel(periodType: g.periodType), w.usedPercent, windowSeconds: windowSeconds, iso: w.resetAt))
         }
         if let w = g.secondaryWindow { s.append(makeSpec(Strings.grokOndemandLabel, w.usedPercent, iso: w.resetAt)) }
+        // No windowSeconds: a product percent is a share of the pool, not its own quota.
+        for entry in g.products ?? [] {
+            guard let window = entry.window, let product = entry.product, !product.isEmpty else { continue }
+            let label = Strings.grokProductLabel(product: product, fallback: entry.label)
+            guard !label.isEmpty else { continue }
+            s.append(makeSpec(label, window.usedPercent, iso: window.resetAt, share: true))
+        }
         return s
     }
 
@@ -641,11 +648,14 @@ struct UsageLimitsView: View {
         reset: String?,
         toolName: String,
         windowSeconds: Double? = nil,
-        resetDate: Date? = nil
+        resetDate: Date? = nil,
+        share: Bool = false
     ) -> some View {
         let rawClamped = min(max(pct, 0), 100)
         let usedFraction = rawClamped / 100.0
-        let displayValue = settings.displayMode == .remaining ? (100 - rawClamped) : rawClamped
+        // A product share stays the used percent. Flipping it would draw 13% of the pool as 87% left.
+        let flipsToRemaining = settings.displayMode == .remaining && !share
+        let displayValue = flipsToRemaining ? (100 - rawClamped) : rawClamped
 
         // Unified threshold fill (green → amber → red), based on actual usage so
         // the color reads the same in used and remaining modes.
@@ -672,7 +682,7 @@ struct UsageLimitsView: View {
             label: label,
             percent: Int(displayValue.rounded()),
             reset: reset,
-            modeSuffix: settings.displayMode == .remaining ? Strings.limitSuffixRemaining : Strings.limitSuffixUsed
+            modeSuffix: flipsToRemaining ? Strings.limitSuffixRemaining : Strings.limitSuffixUsed
         )
 
         return HStack(spacing: Self.rowColumnSpacing) {
@@ -1115,6 +1125,8 @@ private struct LimitWindowSpec: Identifiable {
     let windowSeconds: Double?
     let resetDate: Date?
     let resetText: String?
+    /// True when `pct` is a share of another window, not a quota of its own.
+    var share: Bool = false
 }
 
 /// Side popover with this provider's live per-window numbers (used %, even-pace %,
@@ -1214,7 +1226,7 @@ private struct LimitsExplainContent: View {
         let pace = pace(for: spec)
         var text = Strings.limitWindowExplainLine(
             label: spec.label, used: used, expected: pace.expectedPercent, over: pace.paceOver,
-            runsOutEta: pace.runsOutEta, projectedEnd: pace.projectedEnd, remainingMode: remainingMode
+            runsOutEta: pace.runsOutEta, projectedEnd: pace.projectedEnd, remainingMode: remainingMode && !spec.share
         )
         // Exact local reset instant (#248) — the row itself only shows a compact
         // relative countdown, so the popover carries the precise time.
