@@ -52,7 +52,8 @@ async function callEndpoint(handler, endpoint) {
 test("local usage endpoints reuse one parsed queue until the file changes", async () => {
   const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tt-queue-cache-"));
   const queuePath = path.join(tmp, "queue.jsonl");
-  await fs.promises.writeFile(queuePath, `${JSON.stringify(queueRow(100))}\n`);
+  const queueContents = `${JSON.stringify(queueRow(100))}\n`.repeat(20);
+  await fs.promises.writeFile(queuePath, queueContents);
   const handler = createLocalApiHandler({ queuePath });
 
   const originalOpen = fs.promises.open;
@@ -83,17 +84,19 @@ test("local usage endpoints reuse one parsed queue until the file changes", asyn
     assert.equal(daily.data[0].total_tokens, 100);
     const coldReadBytes = queueBytes;
     await callEndpoint(handler, "/functions/tokentracker-usage-summary?tz=UTC");
-    assert.equal(queueBytes, coldReadBytes, "unchanged snapshots do not reread queue bytes");
+    const validationBytes = queueBytes - coldReadBytes;
+    assert.equal(validationBytes, Buffer.byteLength(queueContents),
+      "unchanged snapshots validate every byte before reusing parsed rows");
 
-    // Appending invalidates the signature, but the queue is append-only, so
-    // the refresh reads just the new tail instead of the whole file.
+    // Appending invalidates the signature. Verify the old prefix and then
+    // parse the new tail without parsing the old rows again.
     await fs.promises.appendFile(queuePath, `${JSON.stringify(queueRow(250))}\n`);
     const refreshed = await callEndpoint(
       handler,
       "/functions/tokentracker-usage-summary?from=2026-07-17&to=2026-07-17&tz=UTC",
     );
     assert.equal(refreshed.totals.total_tokens, 250);
-    assert.ok(queueBytes > coldReadBytes, "append reads the new tail");
+    assert.ok(queueBytes > coldReadBytes, "append validates the prefix and reads the new tail");
   } finally {
     fs.promises.open = originalOpen;
     await fs.promises.rm(tmp, { recursive: true, force: true });
