@@ -272,7 +272,21 @@ function planWindow(row) {
   return {
     used_percent: usedPercent,
     reset_at: normalizeResetAt(row.cycleEnd),
+    used_credits: used,
+    limit_credits: total,
+    remaining_credits: remain ?? Math.max(0, total - used),
   };
+}
+
+// One product row, one account's balance. Prefer a usable quota; when both
+// editions are connected China wins deterministically. Never add their pools.
+function selectWorkbuddyLimits(china, international) {
+  const editions = [china, international].filter(Boolean);
+  const usable = (value) => value.configured === true && !value.error;
+  return editions.find((value) => usable(value) && value.primary_window)
+    || editions.find(usable)
+    || editions.find((value) => value.configured === true)
+    || { configured: false };
 }
 
 // Pick the one subscription-plan package. Reward rows are ignored. When
@@ -540,6 +554,7 @@ module.exports = {
   REWARD_CODES,
   VARIANTS,
   selectWorkbuddyPlanQuota,
+  selectWorkbuddyLimits,
   collectPackageRows,
   readSubscriptionIdentity,
   originAllowed,

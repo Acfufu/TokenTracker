@@ -10,6 +10,7 @@ const {
   fetchWorkbuddyLimits,
   originAllowed,
   selectWorkbuddyPlanQuota,
+  selectWorkbuddyLimits,
   VARIANTS,
 } = require("../src/lib/workbuddy-limits");
 
@@ -59,6 +60,19 @@ test("plan quota keeps the subscription package and drops reward grants", () => 
   assert.equal(quota.plan_label, "Free");
   assert.ok(Math.abs(quota.primary_window.used_percent - (248.29 / 500) * 100) < 1e-9);
   assert.equal(quota.primary_window.reset_at, new Date("2026-10-31T23:59:59").toISOString());
+  assert.equal(quota.primary_window.limit_credits, 500);
+  assert.equal(quota.primary_window.used_credits, 248.29);
+  assert.equal(quota.primary_window.remaining_credits, 251.71);
+});
+
+test("one WorkBuddy product chooses a usable edition without summing account balances", () => {
+  const china = { configured: true, plan_label: "Free", primary_window: { used_percent: 50, limit_credits: 500 } };
+  const ai = { configured: true, plan_label: "Pro", primary_window: { used_percent: 20, limit_credits: 1000 } };
+  assert.equal(selectWorkbuddyLimits(china, ai), china);
+  assert.equal(selectWorkbuddyLimits({ configured: false }, ai), ai);
+  assert.equal(selectWorkbuddyLimits({ configured: true, error: "not running" }, ai), ai);
+  assert.equal(selectWorkbuddyLimits({ configured: true, primary_window: null }, ai), ai);
+  assert.deepEqual(selectWorkbuddyLimits({ configured: false }, { configured: false }), { configured: false });
 });
 
 test("a higher plan tier wins over a trial package", () => {

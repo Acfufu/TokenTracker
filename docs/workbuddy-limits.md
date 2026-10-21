@@ -3,6 +3,11 @@
 WorkBuddy China and WorkBuddy AI use separate local authenticated proxies:
 `~/.workbuddy/wbipc/endpoint.json` and `~/.workbuddy-ai/wbipc/endpoint.json`.
 `WORKBUDDY_HOME` and `WORKBUDDY_AI_HOME` override the respective directories.
+The UI exposes one **WorkBuddy** provider and one visibility switch for both editions.
+It chooses a successful quota over an unavailable edition; if both have usable
+quotas, China takes precedence. Balances from different accounts are never added.
+Legacy `workbuddyAi` display preferences migrate into the unified `workbuddy` switch.
+
 The desktop app must be running and signed in. TokenTracker authenticates the
 local peer with the discovery ticket and the broker's HMAC challenge, then calls
 `wb.request` / `http.fetch`. WorkBuddy supplies its own backend credentials;
@@ -15,7 +20,9 @@ Only three read-only billing operations are exposed by this integration:
 - `POST /billing/meter/get-user-resource-free-packages`
 
 The summary supplies the plan balance; package details supply `CycleEndTime`.
-Only the subscription's base credits contribute to the displayed percentage.
+The window also carries `used_credits`, `limit_credits` and `remaining_credits`
+for hover details, displayed to at most two decimal places. Only the subscription's
+base credits contribute to the displayed percentage.
 Reward, gift, bonus and extra-credit packages are excluded. Requests and sockets
 are cancelled when the usage-limits provider budget expires. Tickets, backend
 credentials and full API responses are never persisted or logged. Legacy

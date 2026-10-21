@@ -40,7 +40,7 @@ enum LimitResetProviderIconCatalog {
         case "codingPlan": return "volcano-ark.svg"
         case "agentPlan": return "volcano-ark.svg"
         case "devin": return "devin.svg"
-        case "workbuddy", "workbuddyAi": return "codebuddy.svg"
+        case "workbuddy": return "codebuddy.svg"
         default: return nil
         }
     }
@@ -293,11 +293,6 @@ extension UsageLimitsResponse {
         if let workbuddy {
             addGeneric("workbuddy", workbuddy.configured, workbuddy.error, [
                 ("primary", Strings.workbuddyPlanLabel, workbuddy.primaryWindow),
-            ])
-        }
-        if let workbuddyAi {
-            addGeneric("workbuddyAi", workbuddyAi.configured, workbuddyAi.error, [
-                ("primary", Strings.workbuddyPlanLabel, workbuddyAi.primaryWindow),
             ])
         }
 

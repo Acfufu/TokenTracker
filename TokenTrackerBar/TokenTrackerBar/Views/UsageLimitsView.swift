@@ -73,7 +73,6 @@ struct UsageLimitsView: View {
         "agentPlan": "VolcanoArkLogo",
         "devin": "DevinLogo",
         "workbuddy": "CodeBuddyLogo",
-        "workbuddyAi": "CodeBuddyLogo",
     ]
 
     var body: some View {
@@ -224,10 +223,6 @@ struct UsageLimitsView: View {
             if let workbuddy = limits.workbuddy, workbuddy.configured, workbuddy.error == nil {
                 return toolSection(id: id, title: planTitle("WorkBuddy", workbuddy.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy", specs: workbuddySpecs(workbuddy), updatedAtISO: workbuddy.cachedAt, isStale: workbuddy.stale ?? false)
             }
-        case "workbuddyAi":
-            if let workbuddyAi = limits.workbuddyAi, workbuddyAi.configured, workbuddyAi.error == nil {
-                return toolSection(id: id, title: planTitle("WorkBuddy AI", workbuddyAi.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy AI", specs: workbuddySpecs(workbuddyAi), updatedAtISO: workbuddyAi.cachedAt, isStale: workbuddyAi.stale ?? false)
-            }
         default:
             break
         }
@@ -337,7 +332,7 @@ struct UsageLimitsView: View {
             }
             VStack(spacing: 4) {
                 ForEach(specs) { spec in
-                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, share: spec.share)
+                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, share: spec.share, creditsDetail: spec.creditsDetail)
                 }
                 if let sub = subscription {
                     subscriptionRow(for: sub)
@@ -573,7 +568,9 @@ struct UsageLimitsView: View {
     private func workbuddySpecs(_ w: WorkbuddyLimits) -> [LimitWindowSpec] {
         var specs: [LimitWindowSpec] = []
         if let window = w.primaryWindow {
-            specs.append(makeSpec(Strings.workbuddyPlanLabel, window.usedPercent, iso: window.resetAt))
+            var spec = makeSpec(Strings.workbuddyPlanLabel, window.usedPercent, iso: window.resetAt)
+            spec.creditsDetail = window.creditsDetail
+            specs.append(spec)
         }
         return specs
     }
@@ -667,7 +664,8 @@ struct UsageLimitsView: View {
         toolName: String,
         windowSeconds: Double? = nil,
         resetDate: Date? = nil,
-        share: Bool = false
+        share: Bool = false,
+        creditsDetail: String? = nil
     ) -> some View {
         let rawClamped = min(max(pct, 0), 100)
         let usedFraction = rawClamped / 100.0
@@ -738,6 +736,7 @@ struct UsageLimitsView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .help(creditsDetail ?? "")
     }
 
     private func subscriptionRow(for subscription: SubscriptionRecord) -> some View {
@@ -1146,6 +1145,7 @@ private struct LimitWindowSpec: Identifiable {
     let resetText: String?
     /// True when `pct` is a share of another window, not a quota of its own.
     var share: Bool = false
+    var creditsDetail: String? = nil
 }
 
 /// Side popover with this provider's live per-window numbers (used %, even-pace %,
@@ -1252,6 +1252,7 @@ private struct LimitsExplainContent: View {
         if let resetDate = spec.resetDate {
             text += " · " + Strings.limitResetsAt(resetDate)
         }
+        if let detail = spec.creditsDetail { text += "\n" + detail }
         return text
     }
 }
