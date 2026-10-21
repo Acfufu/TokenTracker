@@ -322,6 +322,8 @@ const PET_LIMIT_PROVIDER_COPY_NAME_KEYS = {
   agentPlan: "limits.provider.ark_agent_plan",
   commandCode: "limits.provider.command_code",
   devin: "limits.provider.devin",
+  workbuddy: "limits.provider.workbuddy",
+  workbuddyAi: "limits.provider.workbuddy_ai",
 };
 
 // Unix timestamps are normally seconds; values above this order of magnitude
@@ -461,6 +463,12 @@ function collectPetLimitRows(limits) {
   addGeneric("devin", limits.devin, [
     [copy("limits.label.devin_daily"), limits.devin?.primary_window],
     [copy("limits.label.devin_weekly"), limits.devin?.secondary_window],
+  ]);
+  addGeneric("workbuddy", limits.workbuddy, [
+    [copy("limits.label.workbuddy_plan"), limits.workbuddy?.primary_window],
+  ]);
+  addGeneric("workbuddyAi", limits.workbuddyAi, [
+    [copy("limits.label.workbuddy_plan"), limits.workbuddyAi?.primary_window],
   ]);
 
   rows.sort((a, b) => {

@@ -72,6 +72,8 @@ struct UsageLimitsView: View {
         "codingPlan": "VolcanoArkLogo",
         "agentPlan": "VolcanoArkLogo",
         "devin": "DevinLogo",
+        "workbuddy": "CodeBuddyLogo",
+        "workbuddyAi": "CodeBuddyLogo",
     ]
 
     var body: some View {
@@ -217,6 +219,14 @@ struct UsageLimitsView: View {
         case "devin":
             if let devin = limits.devin, devin.configured, devin.error == nil {
                 return toolSection(id: id, title: planTitle("Devin", devin.planLabel), assetName: "DevinLogo", toolName: "Devin", specs: devinSpecs(devin), updatedAtISO: devin.cachedAt, isStale: devin.stale ?? false)
+            }
+        case "workbuddy":
+            if let workbuddy = limits.workbuddy, workbuddy.configured, workbuddy.error == nil {
+                return toolSection(id: id, title: planTitle("WorkBuddy", workbuddy.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy", specs: workbuddySpecs(workbuddy), updatedAtISO: workbuddy.cachedAt, isStale: workbuddy.stale ?? false)
+            }
+        case "workbuddyAi":
+            if let workbuddyAi = limits.workbuddyAi, workbuddyAi.configured, workbuddyAi.error == nil {
+                return toolSection(id: id, title: planTitle("WorkBuddy AI", workbuddyAi.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy AI", specs: workbuddySpecs(workbuddyAi), updatedAtISO: workbuddyAi.cachedAt, isStale: workbuddyAi.stale ?? false)
             }
         default:
             break
@@ -560,6 +570,14 @@ struct UsageLimitsView: View {
         return s
     }
 
+    private func workbuddySpecs(_ w: WorkbuddyLimits) -> [LimitWindowSpec] {
+        var specs: [LimitWindowSpec] = []
+        if let window = w.primaryWindow {
+            specs.append(makeSpec(Strings.workbuddyPlanLabel, window.usedPercent, iso: window.resetAt))
+        }
+        return specs
+    }
+
     private func devinSpecs(_ d: DevinLimits) -> [LimitWindowSpec] {
         var s: [LimitWindowSpec] = []
         if let w = d.primaryWindow { s.append(makeSpec("Daily", w.usedPercent, windowSeconds: w.limitWindowSeconds ?? 86400, iso: w.resetAt)) }
@@ -876,7 +894,7 @@ struct UsageLimitsView: View {
     @ViewBuilder
     private func brandIcon(_ name: String) -> some View {
         switch name {
-        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "CommandCodeLogo", "QoderLogo", "QoderCnLogo", "VolcanoArkLogo", "DevinLogo":
+        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "CommandCodeLogo", "QoderLogo", "QoderCnLogo", "VolcanoArkLogo", "DevinLogo", "CodeBuddyLogo":
             let filename: String = {
                 switch name {
                 case "CursorLogo": return "cursor.svg"
@@ -890,6 +908,7 @@ struct UsageLimitsView: View {
                 case "QoderCnLogo": return "qoder-cn.svg"
                 case "VolcanoArkLogo": return "volcano-ark.svg"
                 case "DevinLogo": return "devin.svg"
+                case "CodeBuddyLogo": return "codebuddy.svg"
                 default: return "copilot.svg"
                 }
             }()

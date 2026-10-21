@@ -57,6 +57,17 @@ describe("UsageLimitsPanel", () => {
     setCopyLocale(EN_LOCALE);
   });
 
+  it("shows WorkBuddy English plan names even when the interface is Chinese", () => {
+    setCopyLocale(ZH_CN_LOCALE);
+    render(<UsageLimitsPanel order={["workbuddy", "workbuddyAi"]}
+      workbuddy={{ configured: true, plan_label: "Free", primary_window: { used_percent: 50.586 } }}
+      workbuddyAi={{ configured: true, plan_label: "Pro-Trial", primary_window: { used_percent: 20 } }}
+    />);
+    expect(screen.getByRole("button", { name: /^WorkBuddy Free/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^WorkBuddy AI Pro-Trial/ })).toBeInTheDocument();
+    expect(screen.queryByText(/体验版/)).not.toBeInTheDocument();
+  });
+
   it("keeps Start grants collapsed inside the Pro row and expands them independently", () => {
     render(
       <UsageLimitsPanel

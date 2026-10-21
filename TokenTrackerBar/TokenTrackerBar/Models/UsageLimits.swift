@@ -19,10 +19,12 @@ struct UsageLimitsResponse: Codable, Equatable {
     let codingPlan: CodingPlanLimits?
     let agentPlan: AgentPlanLimits?
     let devin: DevinLimits?
+    let workbuddy: WorkbuddyLimits?
+    let workbuddyAi: WorkbuddyLimits?
 
     enum CodingKeys: String, CodingKey {
         case fetchedAt = "fetched_at"
-        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder, qoderCn, codingPlan, agentPlan, devin
+        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder, qoderCn, codingPlan, agentPlan, devin, workbuddy, workbuddyAi
         case opencodeGo = "opencodeGo"
         case commandCode = "commandCode"
     }
@@ -626,6 +628,25 @@ struct CodingPlanLimits: Codable, Equatable {
 
 typealias AgentPlanLimits = CodingPlanLimits
 
+/// WorkBuddy subscription-plan credits. China (`workbuddy`) and international
+/// (`workbuddyAi`) are separate rows. Only the plan package is published;
+/// reward grants are not a window.
+struct WorkbuddyLimits: Codable, Equatable {
+    let configured: Bool
+    let error: String?
+    let planLabel: String?
+    let primaryWindow: GenericLimitWindow?
+    let cachedAt: String?
+    let stale: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, error, stale
+        case planLabel = "plan_label"
+        case primaryWindow = "primary_window"
+        case cachedAt = "cached_at"
+    }
+}
+
 /// Devin (devin.ai): daily + weekly subscription quota read from the official
 /// GetPlanStatus RPC by the local server, keyed by the Devin CLI's saved
 /// sign-in. Mirror of CommandCodeLimits minus the subscription status.
@@ -709,6 +730,8 @@ extension UsageLimitsResponse {
             (codingPlan?.configured ?? false, codingPlan?.error),
             (agentPlan?.configured ?? false, agentPlan?.error),
             (devin?.configured ?? false, devin?.error),
+            (workbuddy?.configured ?? false, workbuddy?.error),
+            (workbuddyAi?.configured ?? false, workbuddyAi?.error),
         ]
         return providers.contains { $0.0 && $0.1 == nil }
     }
@@ -747,7 +770,9 @@ extension UsageLimitsResponse {
             qoderCn: qoderCn,
             codingPlan: codingPlan,
             agentPlan: agentPlan,
-            devin: .unconfigured
+            devin: .unconfigured,
+            workbuddy: workbuddy,
+            workbuddyAi: workbuddyAi
         )
     }
 }

@@ -127,6 +127,8 @@ describe("useLimitsDisplayPrefs", () => {
         "cursor",
         "devin",
         "gemini",
+        "workbuddy",
+        "workbuddyAi",
         "grok",
         "kimi",
         "kiro",

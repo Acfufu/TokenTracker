@@ -318,6 +318,8 @@ export function LimitsPage() {
                 codingPlan={usageLimits?.codingPlan}
                 agentPlan={usageLimits?.agentPlan}
                 devin={usageLimits?.devin}
+                workbuddy={usageLimits?.workbuddy}
+                workbuddyAi={usageLimits?.workbuddyAi}
                 order={prefs.order}
                 visibility={prefs.visibility}
                 displayMode={prefs.displayMode}
