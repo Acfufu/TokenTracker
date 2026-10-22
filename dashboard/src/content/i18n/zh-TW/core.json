@@ -802,6 +802,7 @@
   "settings.local_data.cancel": "取消",
   "settings.local_data.sources": "已匯入裝置",
   "settings.local_data.empty": "尚未匯入其他電腦。",
+  "settings.local_data.unavailable": "無法載入已匯入裝置。匯出與匯入需要本機 TokenTracker 應用程式。",
   "settings.local_data.remove": "移除此來源",
   "settings.local_data.confirm_remove": "確認移除",
   "settings.local_data.removed": "已移除匯入用量，本機原始紀錄保持不變。",

@@ -861,6 +861,7 @@
   "settings.local_data.cancel": "取消",
   "settings.local_data.sources": "已导入设备",
   "settings.local_data.empty": "尚未导入其他电脑。",
+  "settings.local_data.unavailable": "无法加载已导入设备。导出和导入需要本机 TokenTracker 应用。",
   "settings.local_data.remove": "移除此来源",
   "settings.local_data.confirm_remove": "确认移除",
   "settings.local_data.removed": "已移除导入用量，本机原始记录保持不变。",

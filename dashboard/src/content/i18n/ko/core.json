@@ -609,6 +609,7 @@
   "settings.local_data.cancel": "취소",
   "settings.local_data.sources": "가져온 기기",
   "settings.local_data.empty": "가져온 기기가 없습니다.",
+  "settings.local_data.unavailable": "가져온 기기를 불러올 수 없습니다. 내보내기와 가져오기는 로컬 TokenTracker 앱이 필요합니다.",
   "settings.local_data.remove": "가져온 기기 제거",
   "settings.local_data.confirm_remove": "제거 확인",
   "settings.local_data.removed": "가져온 사용량을 제거했습니다. 이 기기의 원본 기록은 그대로입니다.",
