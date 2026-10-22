@@ -125,11 +125,12 @@ export function LocalDataSection({ active = true }) {
         </SectionCard>
       )}
       <SectionCard title={copy("settings.local_data.sources")}>
-        {unavailable ? (
+        {unavailable && (
           <p className="py-3 text-sm text-oai-gray-500">{unavailable}</p>
-        ) : imports.length === 0 ? (
+        )}
+        {!unavailable && imports.length === 0 && (
           <p className="py-3 text-sm text-oai-gray-500">{copy("settings.local_data.empty")}</p>
-        ) : null}
+        )}
         {!unavailable && imports.map((device) => <SettingsRow key={device.id} label={device.device_name}
           hint={copy("settings.local_data.snapshot_time", { time: new Date(device.exported_at).toLocaleString() })}
           control={removing === device.machine_id ? <div className="flex flex-wrap gap-2">
