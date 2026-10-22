@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle } from "lucide-react";
 import { copy } from "../../lib/copy";
 import { Button } from "../../ui/components/Button.jsx";
 import { SectionCard, SettingsRow } from "./Controls.jsx";
@@ -8,6 +9,19 @@ import { saveLocalUsageExport } from "../../lib/native-bridge";
 const ERROR_CODES = new Set(["invalid_snapshot", "self_import", "snapshot_conflict", "preview_changed",
   "transfer_busy", "legacy_imports", "invalid_queue", "invalid_state", "identity_unavailable", "too_many_devices", "unknown_device"]);
 
+function LocalDataNotice({ children, tone = "neutral", role }) {
+  const isError = tone === "error";
+  return (
+    <div
+      className="flex items-start gap-3 rounded-lg border border-oai-gray-200 bg-oai-gray-50 p-4 text-sm leading-6 text-oai-gray-600 dark:border-oai-gray-800 dark:bg-oai-gray-900 dark:text-oai-gray-300"
+      role={role || (isError ? "alert" : "status")}
+    >
+      {isError ? <AlertCircle size={18} className="mt-0.5 shrink-0" aria-hidden /> : null}
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
 export function LocalDataSection({ active = true }) {
   const fileInput = useRef(null);
   const [devices, setDevices] = useState([]);
@@ -16,8 +30,24 @@ export function LocalDataSection({ active = true }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const load = useCallback(async () => setDevices((await readLocalUsageDevices()).devices || []), []);
-  useEffect(() => { if (active) load().catch(() => setError(copy("settings.local_data.error.transfer_failed"))); }, [active, load]);
+  const [unavailable, setUnavailable] = useState("");
+  const load = useCallback(async () => {
+    const data = await readLocalUsageDevices();
+    setDevices(data.devices || []);
+    setUnavailable("");
+  }, []);
+  const refreshDevices = useCallback(async () => {
+    try {
+      await load();
+    } catch {
+      setDevices([]);
+      setUnavailable(copy("settings.local_data.unavailable"));
+    }
+  }, [load]);
+  useEffect(() => {
+    if (!active) return;
+    refreshDevices();
+  }, [active, refreshDevices]);
 
   async function run(action) {
     setBusy(true);
@@ -31,7 +61,7 @@ export function LocalDataSection({ active = true }) {
   }
   async function changed() {
     window.dispatchEvent(new Event(LOCAL_USAGE_CHANGED_EVENT));
-    await load();
+    await refreshDevices();
   }
   async function exportUsage() {
     await run(async () => {
@@ -68,8 +98,7 @@ export function LocalDataSection({ active = true }) {
   const imports = devices.filter((device) => { return Boolean(device.imported_at); });
   return (
     <div className="space-y-4">
-      <SectionCard title={copy("settings.local_data.title")}>
-        <p className="py-3 text-sm text-oai-gray-500 dark:text-oai-gray-400">{copy("settings.local_data.scope")}</p>
+      <SectionCard title={copy("settings.local_data.title")} subtitle={copy("settings.local_data.scope")}>
         <SettingsRow label={copy("settings.local_data.export")}
           control={<Button variant="secondary" size="sm" disabled={busy} onClick={exportUsage}>{copy("settings.local_data.export")}</Button>} />
         <SettingsRow label={copy("settings.local_data.import")}
@@ -96,8 +125,12 @@ export function LocalDataSection({ active = true }) {
         </SectionCard>
       )}
       <SectionCard title={copy("settings.local_data.sources")}>
-        {imports.length === 0 && <p className="py-3 text-sm text-oai-gray-500">{copy("settings.local_data.empty")}</p>}
-        {imports.map((device) => <SettingsRow key={device.id} label={device.device_name}
+        {unavailable ? (
+          <p className="py-3 text-sm text-oai-gray-500">{unavailable}</p>
+        ) : imports.length === 0 ? (
+          <p className="py-3 text-sm text-oai-gray-500">{copy("settings.local_data.empty")}</p>
+        ) : null}
+        {!unavailable && imports.map((device) => <SettingsRow key={device.id} label={device.device_name}
           hint={copy("settings.local_data.snapshot_time", { time: new Date(device.exported_at).toLocaleString() })}
           control={removing === device.machine_id ? <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => {
@@ -109,8 +142,8 @@ export function LocalDataSection({ active = true }) {
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => setRemoving("")}>{copy("settings.local_data.cancel")}</Button>
           </div> : <Button variant="secondary" size="sm" disabled={busy} onClick={() => setRemoving(device.machine_id)}>{copy("settings.local_data.remove")}</Button>} />)}
       </SectionCard>
-      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {status && <p role="status" className="text-sm text-oai-gray-500">{status}</p>}
+      {error && <LocalDataNotice tone="error">{error}</LocalDataNotice>}
+      {status && <LocalDataNotice>{status}</LocalDataNotice>}
     </div>
   );
 }

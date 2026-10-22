@@ -2111,6 +2111,7 @@ settings.local_data.confirm,settings,SettingsPage,LocalDataSection,confirm,Confi
 settings.local_data.cancel,settings,SettingsPage,LocalDataSection,cancel,Cancel,,active
 settings.local_data.sources,settings,SettingsPage,LocalDataSection,sources,Imported devices,,active
 settings.local_data.empty,settings,SettingsPage,LocalDataSection,empty,No imported devices.,,active
+settings.local_data.unavailable,settings,SettingsPage,LocalDataSection,unavailable,"Couldn't load imported devices. Export and import need the local TokenTracker app.",,active
 settings.local_data.remove,settings,SettingsPage,LocalDataSection,remove,Remove source,,active
 settings.local_data.confirm_remove,settings,SettingsPage,LocalDataSection,confirm_remove,Confirm removal,,active
 settings.local_data.removed,settings,SettingsPage,LocalDataSection,removed,Imported usage removed. This device’s original history is unchanged.,,active
