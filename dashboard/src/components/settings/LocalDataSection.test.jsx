@@ -52,6 +52,26 @@ describe("local usage transfers", () => {
     fireEvent.click(screen.getByRole("button", { name: copy("settings.local_data.confirm_remove") }));
     await waitFor(() => expect(localUsageAction).toHaveBeenCalledWith("remove", { machine_id: "machine-aaaa" }));
   });
+
+  it("shows a quiet unavailable notice when the local list cannot load", async () => {
+    readLocalUsageDevices.mockRejectedValue(new Error("offline"));
+    render(<LocalDataSection />);
+    expect(await screen.findByText(copy("settings.local_data.unavailable"))).toBeInTheDocument();
+    expect(screen.queryByText(copy("settings.local_data.empty"))).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("keeps import success when the follow-up device refresh fails", async () => {
+    readLocalUsageDevices
+      .mockResolvedValueOnce({ devices: [] })
+      .mockRejectedValueOnce(new Error("offline"));
+    render(<LocalDataSection />);
+    await waitFor(() => expect(readLocalUsageDevices).toHaveBeenCalled());
+    selectFile();
+    fireEvent.click(await screen.findByRole("button", { name: copy("settings.local_data.confirm") }));
+    expect(await screen.findByRole("status")).toHaveTextContent(copy("settings.local_data.imported"));
+    expect(await screen.findByText(copy("settings.local_data.unavailable"))).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
   it("does not claim a native export was saved when the host reports failure", async () => {
     saveLocalUsageExport.mockRejectedValue(new Error("save_failed"));
     render(<LocalDataSection />);
