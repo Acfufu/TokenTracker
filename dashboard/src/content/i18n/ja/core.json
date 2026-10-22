@@ -609,6 +609,7 @@
   "settings.local_data.cancel": "キャンセル",
   "settings.local_data.sources": "インポート済み端末",
   "settings.local_data.empty": "インポート済みの端末はありません。",
+  "settings.local_data.unavailable": "インポート済み端末を読み込めません。エクスポートとインポートにはローカルの TokenTracker アプリが必要です。",
   "settings.local_data.remove": "この端末を除外",
   "settings.local_data.confirm_remove": "除外を確定",
   "settings.local_data.removed": "インポートした用量を除外しました。この端末の履歴は変更されません。",

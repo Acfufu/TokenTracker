@@ -606,6 +606,7 @@
   "settings.local_data.cancel": "Abbrechen",
   "settings.local_data.sources": "Importierte Geräte",
   "settings.local_data.empty": "Keine importierten Geräte.",
+  "settings.local_data.unavailable": "Importierte Geräte konnten nicht geladen werden. Export und Import brauchen die lokale TokenTracker-App.",
   "settings.local_data.remove": "Quelle entfernen",
   "settings.local_data.confirm_remove": "Entfernen bestätigen",
   "settings.local_data.removed": "Importierte Nutzung entfernt. Der eigene Verlauf bleibt unverändert.",
