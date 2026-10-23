@@ -454,7 +454,9 @@ function ToolGroup({ name, providerId, children, expandable = false, expanded = 
           onToggle?.();
         }
       }}
-      className="flex flex-col gap-1.5 -mx-1.5 px-1.5 py-1 rounded-lg cursor-pointer transition-colors hover:bg-oai-gray-50 dark:hover:bg-oai-gray-800/40 aria-expanded:bg-oai-gray-50 dark:aria-expanded:bg-oai-gray-800/40"
+      // Expanding reveals detail (e.g. Grok's per-product slices), so keyboard
+      // focus needs the same visible ring as the card's other toggles.
+      className="flex flex-col gap-1.5 -mx-1.5 px-1.5 py-1 rounded-lg cursor-pointer transition-colors hover:bg-oai-gray-50 dark:hover:bg-oai-gray-800/40 aria-expanded:bg-oai-gray-50 dark:aria-expanded:bg-oai-gray-800/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
     >
       {header}
       {children}

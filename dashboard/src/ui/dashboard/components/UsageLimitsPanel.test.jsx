@@ -570,6 +570,43 @@ describe("UsageLimitsPanel", () => {
     expect(within(group).getByText(copy("limits.explain.body"))).toBeInTheDocument();
   });
 
+  it("opens and closes Grok's product breakdown from the keyboard", () => {
+    const resetAt = "2026-10-01T00:00:00.000Z";
+    render(createElement(UsageLimitsPanel, {
+      grok: {
+        configured: true,
+        error: null,
+        period_type: "weekly",
+        primary_window: { used_percent: 58, reset_at: resetAt },
+        products: [
+          { product: "GrokBuild", label: "Grok Build", window: { used_percent: 45, reset_at: resetAt } },
+          { product: "GrokChat", label: "Chat", window: { used_percent: 13, reset_at: resetAt } },
+        ],
+      },
+      order: ["grok"],
+    }));
+
+    const group = screen.getByText("58%").closest("[role='button']");
+    // Reachable by Tab, with a visible focus ring like the card's other toggles.
+    expect(group).toHaveAttribute("tabindex", "0");
+    expect(group.className).toContain("focus-visible:ring-2");
+    expect(group).toHaveAttribute("aria-expanded", "false");
+
+    group.focus();
+    fireEvent.keyDown(group, { key: "Enter" });
+    expect(group).toHaveAttribute("aria-expanded", "true");
+    const legend = group.querySelector("[data-limit-legend]");
+    expect(legend).not.toBeNull();
+    expect(group.querySelectorAll("[data-limit-segment]")).toHaveLength(2);
+    expect(within(legend).getByText("Grok Build")).toBeInTheDocument();
+    expect(within(legend).getByText("45%")).toBeInTheDocument();
+
+    fireEvent.keyDown(group, { key: " " });
+    expect(group).toHaveAttribute("aria-expanded", "false");
+    expect(group.querySelector("[data-limit-legend]")).toBeNull();
+    expect(group.querySelectorAll("[data-limit-segment]")).toHaveLength(0);
+  });
+
   it("surfaces a configured OpenCode Go error instead of rendering bars", () => {
     render(
       <UsageLimitsPanel
