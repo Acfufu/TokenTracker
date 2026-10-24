@@ -261,7 +261,22 @@ jobs:
       # the actual bundled binary too so native fs/undici regressions cannot
       # hide behind a successful run on a different Node major.
       - name: Test suite with the bundled Windows Node runtime
-        run: .\TokenTrackerWin\publish\EmbeddedServer\node.exe --test --test-timeout=120000 --test-concurrency=4 test/*.test.js
+        shell: pwsh
+        run: |
+          $runtime = '.\TokenTrackerWin\publish\EmbeddedServer\node.exe'
+          $reinstallTest = 'init-local-runtime-reinstall.test.js'
+          $regularTests = @(Get-ChildItem -LiteralPath test -Filter '*.test.js' -File |
+            Where-Object Name -ne $reinstallTest | Sort-Object Name |
+            ForEach-Object { "test/$($_.Name)" })
+          if ($regularTests.Count -eq 0) { throw 'No regular test files found' }
+          $reinstallTestPath = "test/$reinstallTest"
+          if (-not (Test-Path -LiteralPath $reinstallTestPath -PathType Leaf)) { throw 'Runtime reinstall test file missing' }
+          & $runtime --test --test-timeout=120000 --test-concurrency=4 @regularTests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Node22 also applies the CLI timeout to the parent test file. Allow
+          # its three sequential 300s cases to complete within that budget.
+          & $runtime --test --test-timeout=900000 --test-concurrency=1 $reinstallTestPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compile Windows review installer
         shell: pwsh
