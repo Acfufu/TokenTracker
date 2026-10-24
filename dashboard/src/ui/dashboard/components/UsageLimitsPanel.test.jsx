@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy, setCopyLocale } from "../../../lib/copy";
@@ -55,6 +55,30 @@ afterEach(() => {
 describe("UsageLimitsPanel", () => {
   afterEach(() => {
     setCopyLocale(EN_LOCALE);
+  });
+
+  it("shows one WorkBuddy row with exact credit amounts on hover and keyboard expansion in Chinese", async () => {
+    setCopyLocale(ZH_CN_LOCALE);
+    render(<UsageLimitsPanel order={["workbuddy", "workbuddyAi"]}
+      displayMode="remaining"
+      workbuddy={{ configured: true, plan_label: "Free", primary_window: {
+        used_percent: 50.586, used_credits: 252.92999996, limit_credits: 500, remaining_credits: 247.07000004,
+      } }}
+    />);
+    expect(screen.getByRole("button", { name: /^WorkBuddy Free/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^WorkBuddy/ })).toHaveLength(1);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("已用 252.93 / 500 点额度 · 剩余 247.07");
+    expect(screen.getByText("49%")).toBeInTheDocument();
+    expect(screen.queryByText("WorkBuddy AI")).not.toBeInTheDocument();
+    expect(screen.queryByText(/体验版/)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("button", { name: /^WorkBuddy Free/ }), { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("已用 252.93 / 500 点额度 · 剩余 247.07")).toBeVisible());
+  });
+
+  it("keeps the international English plan name in the single WorkBuddy row", () => {
+    render(<UsageLimitsPanel workbuddy={{ configured: true, plan_label: "Pro-Trial", primary_window: { used_percent: 20 } }} />);
+    expect(screen.getByRole("button", { name: /^WorkBuddy Pro-Trial/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^WorkBuddy/ })).toHaveLength(1);
   });
 
   it("keeps Start grants collapsed inside the Pro row and expands them independently", () => {
