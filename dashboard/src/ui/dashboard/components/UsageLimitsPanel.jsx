@@ -198,7 +198,9 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
   }
   const paceX = pacePercent == null ? null : Math.max(0, Math.min(100, pacePercent));
   const segmentWeights = segments?.map((segment) => Math.max(0, Math.min(100, Number(segment.pct) || 0)));
-  const remainingWeight = Math.max(0, 100 - (segmentWeights?.reduce((sum, pct) => { return sum + pct; }, 0) || 0));
+  const segmentTotal = segmentWeights?.reduce((sum, pct) => { return sum + pct; }, 0) || 0;
+  const unallocatedUsedWeight = segments ? Math.max(0, rawUsed - segmentTotal) : 0;
+  const remainingWeight = Math.max(0, 100 - segmentTotal - unallocatedUsedWeight);
   return (
     <div className="group relative flex items-center gap-2">
       <Tooltip text={title} />
@@ -222,6 +224,7 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
               }}
             />
           ))}
+          {unallocatedUsedWeight ? <div data-limit-unallocated-used="" className={`${fillColor} min-w-0 rounded-full h-full`} style={{ flex: `${unallocatedUsedWeight} 1 0px`, opacity: segmentOpacity(segments.length) }} /> : null}
           {remainingWeight ? <div data-limit-remainder="" className="min-w-0 rounded-full h-full bg-oai-gray-100 dark:bg-oai-gray-700/50" style={{ flex: `${remainingWeight} 1 0px` }} /> : null}
           {paceX != null && <PaceMarker paceX={paceX} paceOver={paceOver} />}
         </div>

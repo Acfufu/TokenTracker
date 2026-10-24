@@ -25,4 +25,13 @@ final class UsageLimitSegmentLayoutTests: XCTestCase {
             XCTAssertEqual(widths.reduce(0, +) + size / 50, size, accuracy: 0.0001)
         }
     }
+
+    func testUnallocatedUsedShareDoesNotIncreaseTheRemainingPool() {
+        // 62% used, but the named products account for only 61.4%.
+        let widths = UsageLimitSegmentLayout.widths(percentages: [45, 13, 3, 0.4, 0.6], trackWidth: 200, gap: 1.5)
+        let usable = 200.0 - 5 * 1.5
+        XCTAssertGreaterThan(widths[4], 0)
+        XCTAssertEqual(widths[5] / usable, 0.38, accuracy: 0.0001)
+        XCTAssertEqual(widths.reduce(0, +) + 7.5, 200, accuracy: 0.0001)
+    }
 }
