@@ -72,6 +72,7 @@ struct UsageLimitsView: View {
         "codingPlan": "VolcanoArkLogo",
         "agentPlan": "VolcanoArkLogo",
         "devin": "DevinLogo",
+        "workbuddy": "CodeBuddyLogo",
     ]
 
     var body: some View {
@@ -218,6 +219,10 @@ struct UsageLimitsView: View {
             if let devin = limits.devin, devin.configured, devin.error == nil {
                 return toolSection(id: id, title: planTitle("Devin", devin.planLabel), assetName: "DevinLogo", toolName: "Devin", specs: devinSpecs(devin), updatedAtISO: devin.cachedAt, isStale: devin.stale ?? false)
             }
+        case "workbuddy":
+            if let workbuddy = limits.workbuddy, workbuddy.configured, workbuddy.error == nil {
+                return toolSection(id: id, title: planTitle("WorkBuddy", workbuddy.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy", specs: workbuddySpecs(workbuddy), updatedAtISO: workbuddy.cachedAt, isStale: workbuddy.stale ?? false)
+            }
         default:
             break
         }
@@ -330,7 +335,7 @@ struct UsageLimitsView: View {
                     // The per-product split is detail: it shows only while this
                     // provider is clicked open; otherwise the bar is the whole pool.
                     let showSegments = explainingProvider == id && !spec.segments.isEmpty
-                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, segments: spec.segments, showSegments: showSegments, productPool: spec.productPool)
+                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, segments: spec.segments, showSegments: showSegments, productPool: spec.productPool, creditsDetail: spec.creditsDetail)
                     if showSegments {
                         segmentLegend(spec.segments, pct: spec.pct)
                     }
@@ -567,6 +572,16 @@ struct UsageLimitsView: View {
         return s
     }
 
+    private func workbuddySpecs(_ w: WorkbuddyLimits) -> [LimitWindowSpec] {
+        var specs: [LimitWindowSpec] = []
+        if let window = w.primaryWindow {
+            var spec = makeSpec(Strings.workbuddyPlanLabel, window.usedPercent, iso: window.resetAt)
+            spec.creditsDetail = window.creditsDetail
+            specs.append(spec)
+        }
+        return specs
+    }
+
     private func devinSpecs(_ d: DevinLimits) -> [LimitWindowSpec] {
         var s: [LimitWindowSpec] = []
         if let w = d.primaryWindow { s.append(makeSpec("Daily", w.usedPercent, windowSeconds: w.limitWindowSeconds ?? 86400, iso: w.resetAt)) }
@@ -658,7 +673,8 @@ struct UsageLimitsView: View {
         resetDate: Date? = nil,
         segments: [LimitSegment] = [],
         showSegments: Bool = false,
-        productPool: Bool = false
+        productPool: Bool = false,
+        creditsDetail: String? = nil
     ) -> some View {
         let rawClamped = min(max(pct, 0), 100)
         let usedFraction = rawClamped / 100.0
@@ -729,7 +745,8 @@ struct UsageLimitsView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel([accessibilityLabel, creditsDetail].compactMap { $0 }.joined(separator: ", "))
+        .help(creditsDetail ?? "")
     }
 
     /// Dot + name + share for each slice of a segmented bar, aligned under the
@@ -917,7 +934,7 @@ struct UsageLimitsView: View {
     @ViewBuilder
     private func brandIcon(_ name: String) -> some View {
         switch name {
-        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "CommandCodeLogo", "QoderLogo", "QoderCnLogo", "VolcanoArkLogo", "DevinLogo":
+        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "CommandCodeLogo", "QoderLogo", "QoderCnLogo", "VolcanoArkLogo", "DevinLogo", "CodeBuddyLogo":
             let filename: String = {
                 switch name {
                 case "CursorLogo": return "cursor.svg"
@@ -931,6 +948,7 @@ struct UsageLimitsView: View {
                 case "QoderCnLogo": return "qoder-cn.svg"
                 case "VolcanoArkLogo": return "volcano-ark.svg"
                 case "DevinLogo": return "devin.svg"
+                case "CodeBuddyLogo": return "codebuddy.svg"
                 default: return "copilot.svg"
                 }
             }()
@@ -1170,6 +1188,7 @@ private struct LimitWindowSpec: Identifiable {
     var segments: [LimitSegment] = []
     /// The pool keeps its used orientation even before the first post-reset product.
     var productPool: Bool = false
+    var creditsDetail: String? = nil
 }
 
 /// One slice of a pooled window, e.g. a Grok product's points of the weekly cap.
@@ -1293,6 +1312,7 @@ private struct LimitsExplainContent: View {
         if let resetDate = spec.resetDate {
             text += " · " + Strings.limitResetsAt(resetDate)
         }
+        if let detail = spec.creditsDetail { text += "\n" + detail }
         return text
     }
 }
