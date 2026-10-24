@@ -735,7 +735,7 @@ struct UsageLimitsView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel([accessibilityLabel, creditsDetail].compactMap { $0 }.joined(separator: ", "))
         .help(creditsDetail ?? "")
     }
 

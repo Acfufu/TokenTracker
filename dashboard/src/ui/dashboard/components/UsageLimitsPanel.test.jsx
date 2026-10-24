@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy, setCopyLocale } from "../../../lib/copy";
@@ -57,7 +57,7 @@ describe("UsageLimitsPanel", () => {
     setCopyLocale(EN_LOCALE);
   });
 
-  it("shows one WorkBuddy row with exact credit amounts on hover in Chinese", () => {
+  it("shows one WorkBuddy row with exact credit amounts on hover and keyboard expansion in Chinese", async () => {
     setCopyLocale(ZH_CN_LOCALE);
     render(<UsageLimitsPanel order={["workbuddy", "workbuddyAi"]}
       displayMode="remaining"
@@ -71,6 +71,8 @@ describe("UsageLimitsPanel", () => {
     expect(screen.getByText("49%")).toBeInTheDocument();
     expect(screen.queryByText("WorkBuddy AI")).not.toBeInTheDocument();
     expect(screen.queryByText(/体验版/)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("button", { name: /^WorkBuddy Free/ }), { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("已用 252.93 / 500 点额度 · 剩余 247.07")).toBeVisible());
   });
 
   it("keeps the international English plan name in the single WorkBuddy row", () => {

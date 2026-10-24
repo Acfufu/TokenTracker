@@ -11,6 +11,12 @@ const { getUsageLimits, resetUsageLimitsCache } = require("./helpers/usage-limit
 
 const PLAN = "TCACA_code_008_cfWoLwvjU4";
 const REWARD = "TCACA_code_007_nzdH5h4Nl0";
+
+test("missing provider homes have no local IPC discovery", () => {
+  assert.equal(readWorkbuddyIpcDiscovery(null), null);
+  assert.equal(readWorkbuddyIpcDiscovery(undefined), null);
+});
+
 function quotaResponse(apiPath) {
   if (apiPath.endsWith("summary")) return { code: 0, data: {
     SubscriptionPackageName: "体验版",

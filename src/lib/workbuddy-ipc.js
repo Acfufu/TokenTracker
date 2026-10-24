@@ -16,6 +16,7 @@ const BILLING_PATHS = new Set([
 ]);
 
 function readWorkbuddyIpcDiscovery(workbuddyHome) {
+  if (!workbuddyHome) return null;
   let fd;
   try {
     fd = fs.openSync(path.join(workbuddyHome, "wbipc", "endpoint.json"),

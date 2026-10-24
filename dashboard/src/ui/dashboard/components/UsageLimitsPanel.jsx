@@ -263,6 +263,9 @@ function LimitDetail({ rows, mode, now = Date.now() }) {
                 {copy(spec.timeKind === "expiry" ? "limits.hover.expires_at" : "limits.hover.resets_at", { time: exact })}
               </span>
             ) : null}
+            {spec.showCreditDetail ? (
+              <div>{buildQuotaDetail(spec.window, spec.creditPrecision)}</div>
+            ) : null}
           </div>
         );
       })}
