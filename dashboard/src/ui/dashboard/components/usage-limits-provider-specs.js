@@ -118,6 +118,7 @@ export const PROVIDER_LIMIT_SPECS = {
           labelKey: primaryLabelKey,
           window: data.primary_window,
           windowSeconds,
+          productPool: true,
           segments: grokProductSegments(data),
         },
         { key: "ondemand", labelKey: "limits.label.grok_ondemand", window: data.secondary_window },

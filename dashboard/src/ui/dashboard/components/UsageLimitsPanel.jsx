@@ -197,6 +197,8 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
     labelPct = copy("limits.bar.sub_one_percent");
   }
   const paceX = pacePercent == null ? null : Math.max(0, Math.min(100, pacePercent));
+  const segmentWeights = segments?.map((segment) => Math.max(0, Math.min(100, Number(segment.pct) || 0)));
+  const remainingWeight = Math.max(0, 100 - (segmentWeights?.reduce((sum, pct) => { return sum + pct; }, 0) || 0));
   return (
     <div className="group relative flex items-center gap-2">
       <Tooltip text={title} />
@@ -208,22 +210,19 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
         {label}
       </span>
       {segments ? (
-        // One slice per product, then the bare track for what is left. The
-        // gaps show the card through, so slices stay apart in either theme.
-        <div data-limit-segments="" className="relative flex flex-1 gap-[2px] h-1.5 overflow-hidden">
+        <div data-limit-segments="" className="relative flex flex-1 h-1.5 overflow-hidden" style={{ gap: "min(2px, 1%)" }}>
           {segments.map((segment, index) => (
             <div
               key={segment.key}
               data-limit-segment={segment.key}
-              className={`${fillColor} shrink-0 rounded-full h-full transition-[width] duration-500 ease-out`}
+              className={`${fillColor} min-w-0 rounded-full h-full transition-[flex-grow] duration-500 ease-out`}
               style={{
-                width: `${Math.max(0, Math.min(100, Number(segment.pct) || 0))}%`,
-                minWidth: "3px",
+                flex: `${segmentWeights[index]} 1 0px`,
                 opacity: segmentOpacity(index),
               }}
             />
           ))}
-          <div className="flex-1 min-w-0 rounded-full h-full bg-oai-gray-100 dark:bg-oai-gray-700/50" />
+          {remainingWeight ? <div data-limit-remainder="" className="min-w-0 rounded-full h-full bg-oai-gray-100 dark:bg-oai-gray-700/50" style={{ flex: `${remainingWeight} 1 0px` }} /> : null}
           {paceX != null && <PaceMarker paceX={paceX} paceOver={paceOver} />}
         </div>
       ) : (
@@ -811,7 +810,7 @@ function renderConfiguredProvider(id, data, title, mode, expanded, onToggle, bad
     .windows(data)
     .filter((s) => s.window)
     .map((s) => {
-      const rowMode = s.segments ? LIMIT_DISPLAY_MODES.USED : mode;
+      const rowMode = s.productPool ? LIMIT_DISPLAY_MODES.USED : mode;
       return { spec: s, mode: rowMode, pace: paceForSpec(s, rowMode, now) };
     });
   const extra = renderProviderExtra(spec.extra, data);

@@ -502,12 +502,12 @@ describe("UsageLimitsPanel", () => {
     }));
 
     const group = screen.getByText("Grok Build").closest("[role='button']");
-    expect(within(group).getByText("97%")).toBeInTheDocument();
+    expect(within(group).getByText("3%")).toBeInTheDocument();
     const markers = group.querySelectorAll("div.absolute.top-0.h-full");
     expect(markers).toHaveLength(2);
-    expect(markers[1].style.left).toContain("85.714");
+    expect(markers[1].style.left).toContain("14.285");
     fireEvent.click(group);
-    expect(within(group).getByText(copy("limits.explain.body_remaining"))).toBeInTheDocument();
+    expect(within(group).getByText(copy("limits.explain.body"))).toBeInTheDocument();
 
     rerender(createElement(UsageLimitsPanel, {
       grok: { ...grok, primary_window: { ...grok.primary_window, used_percent: 0 } },
@@ -557,6 +557,7 @@ describe("UsageLimitsPanel", () => {
     const legend = group.querySelector("[data-limit-legend]");
     expect(legend).not.toBeNull();
     expect(group.querySelectorAll("[data-limit-segment]")).toHaveLength(4);
+    expect([...group.querySelectorAll("[data-limit-segment]")].map((el) => el.style.flexGrow)).toEqual(["45", "13", "3", "0.4"]);
     expect(within(group).getByText("62%")).toBeInTheDocument();
     expect(within(legend).getByText("Grok Build")).toBeInTheDocument();
     expect(within(legend).getByText(copy("limits.label.grok_chat"))).toBeInTheDocument();
@@ -568,6 +569,44 @@ describe("UsageLimitsPanel", () => {
     expect(markers).toHaveLength(2);
     expect(markers[1].style.left).toContain("14.285");
     expect(within(group).getByText(copy("limits.explain.body"))).toBeInTheDocument();
+  });
+
+  it.each([[], [{ product: "GrokBuild", window: { used_percent: 0 } }]])("keeps the Grok pool in used mode after reset with products %j", (products) => {
+    render(<UsageLimitsPanel order={["grok"]} displayMode="remaining" grok={{
+      configured: true, period_type: "weekly",
+      primary_window: { used_percent: 0 },
+      secondary_window: { used_percent: 20 },
+      products,
+    }} />);
+    const group = screen.getByRole("button", { name: /^Grok Build/ });
+    expect(within(group).getByText("0%")).toBeInTheDocument();
+    expect(within(group).getByText("80%")).toBeInTheDocument();
+    fireEvent.click(group);
+    expect(group.querySelector("[data-limit-segments]")).toBeNull();
+    expect(within(group).getAllByText(copy("limits.explain.used", { label: copy("limits.label.grok_week"), used: "0" }))).toHaveLength(2);
+  });
+
+  it.each([98, 97])("budgets near-full Grok slices with %s percent in the first product", (first) => {
+    render(<UsageLimitsPanel order={["grok"]} displayMode="remaining" grok={{
+      configured: true, primary_window: { used_percent: first + 2 },
+      products: [
+        { product: "GrokBuild", window: { used_percent: first } },
+        { product: "GrokChat", window: { used_percent: 1 } },
+        { product: "GrokVoice", window: { used_percent: 1 } },
+      ],
+    }} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Grok Build/ }));
+    const slices = [...document.querySelectorAll("[data-limit-segment]")];
+    expect(slices.map((slice) => Number(slice.style.flexGrow))).toEqual([first, 1, 1]);
+    for (const slice of slices) {
+      expect(slice.style.flexBasis).toBe("0px");
+      expect(slice).toHaveClass("min-w-0");
+      expect(slice.style.width).toBe("");
+      expect(slice.style.minWidth).toBe("");
+    }
+    const remainder = document.querySelector("[data-limit-remainder]");
+    if (first === 98) expect(remainder).toBeNull();
+    else expect(remainder.style.flexGrow).toBe("1");
   });
 
   it("opens and closes Grok's product breakdown from the keyboard", () => {

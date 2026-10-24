@@ -330,7 +330,7 @@ struct UsageLimitsView: View {
                     // The per-product split is detail: it shows only while this
                     // provider is clicked open; otherwise the bar is the whole pool.
                     let showSegments = explainingProvider == id && !spec.segments.isEmpty
-                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, segments: spec.segments, showSegments: showSegments)
+                    limitRow(label: spec.label, pct: spec.pct, reset: spec.resetText, toolName: toolName, windowSeconds: spec.windowSeconds, resetDate: spec.resetDate, segments: spec.segments, showSegments: showSegments, productPool: spec.productPool)
                     if showSegments {
                         segmentLegend(spec.segments, pct: spec.pct)
                     }
@@ -392,9 +392,9 @@ struct UsageLimitsView: View {
 
     // MARK: - Window specs (one source of truth for rows + the explain popover)
 
-    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, iso: String?, segments: [LimitSegment] = []) -> LimitWindowSpec {
+    private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, iso: String?, segments: [LimitSegment] = [], productPool: Bool = false) -> LimitWindowSpec {
         let date = resetDate(iso: iso)
-        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString), segments: segments)
+        return LimitWindowSpec(label: label, pct: pct, windowSeconds: windowSeconds, resetDate: date, resetText: date.map(relativeString), segments: segments, productPool: productPool)
     }
 
     private func makeSpec(_ label: String, _ pct: Double, windowSeconds: Double? = nil, epoch: Int?) -> LimitWindowSpec {
@@ -529,7 +529,7 @@ struct UsageLimitsView: View {
                 let label = Strings.grokProductLabel(product: product, fallback: entry.label)
                 return label.isEmpty ? nil : LimitSegment(id: product, label: label, pct: window.usedPercent)
             }
-            s.append(makeSpec(Strings.grokPrimaryLabel(periodType: g.periodType), w.usedPercent, windowSeconds: windowSeconds, iso: w.resetAt, segments: segments))
+            s.append(makeSpec(Strings.grokPrimaryLabel(periodType: g.periodType), w.usedPercent, windowSeconds: windowSeconds, iso: w.resetAt, segments: segments, productPool: true))
         }
         if let w = g.secondaryWindow { s.append(makeSpec(Strings.grokOndemandLabel, w.usedPercent, iso: w.resetAt)) }
         return s
@@ -657,12 +657,13 @@ struct UsageLimitsView: View {
         windowSeconds: Double? = nil,
         resetDate: Date? = nil,
         segments: [LimitSegment] = [],
-        showSegments: Bool = false
+        showSegments: Bool = false,
+        productPool: Bool = false
     ) -> some View {
         let rawClamped = min(max(pct, 0), 100)
         let usedFraction = rawClamped / 100.0
         // A segmented pool stays in used mode, like grok.com: its slices only add up to the headline that way.
-        let remainingMode = settings.displayMode == .remaining && segments.isEmpty
+        let remainingMode = settings.displayMode == .remaining && !productPool
         let displayValue = remainingMode ? (100 - rawClamped) : rawClamped
 
         // Unified threshold fill (green → amber → red), based on actual usage so
@@ -1166,8 +1167,9 @@ private struct LimitWindowSpec: Identifiable {
     let resetDate: Date?
     let resetText: String?
     /// Shares of `pct` drawn as one stacked bar plus a legend (Grok products).
-    /// Non-empty pins the row to used mode: the slices only add up that way.
     var segments: [LimitSegment] = []
+    /// The pool keeps its used orientation even before the first post-reset product.
+    var productPool: Bool = false
 }
 
 /// One slice of a pooled window, e.g. a Grok product's points of the weekly cap.
@@ -1261,7 +1263,7 @@ private struct LimitsExplainContent: View {
 
     /// A segmented pool always reads as used, matching its row.
     private func isRemaining(_ spec: LimitWindowSpec) -> Bool {
-        remainingMode && spec.segments.isEmpty
+        remainingMode && !spec.productPool
     }
 
     private func pace(for spec: LimitWindowSpec) -> LimitPace.Result {

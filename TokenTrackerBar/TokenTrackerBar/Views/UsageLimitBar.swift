@@ -67,20 +67,21 @@ struct UsageLimitBar: View, Animatable {
                                  with: .color(fillColor))
                 }
             } else {
-                // Slices separated by small gaps, then the bare track for the
-                // rest. A sliver keeps a minimum width so a 1% share still shows.
-                let gap = align(1.5)
+                // Reserve gaps inside the track, then distribute the remaining
+                // pixels proportionally, including the unused pool.
+                let gap = min(align(1.5), size.width / 100)
+                let widths = UsageLimitSegmentLayout.widths(percentages: segments, trackWidth: Double(size.width), gap: Double(gap))
                 var x: CGFloat = 0
-                for (index, pct) in segments.enumerated() where pct > 0 && x < size.width {
-                    let width = min(max(size.width * min(pct, 100) / 100, align(2)), size.width - x)
+                for index in segments.indices where widths[index] > 0 && x < size.width {
+                    let width = CGFloat(widths[index])
                     let slice = CGRect(x: x, y: 0, width: width, height: size.height)
                     let r = min(radius, width / 2)
                     context.fill(Path { $0.addRoundedRect(in: slice, cornerSize: CGSize(width: r, height: r)) },
                                  with: .color(fillColor.opacity(Self.segmentOpacity(index))))
                     x += width + gap
                 }
-                if x < size.width {
-                    let rest = CGRect(x: x, y: 0, width: size.width - x, height: size.height)
+                if let remaining = widths.last, remaining > 0 {
+                    let rest = CGRect(x: x, y: 0, width: CGFloat(remaining), height: size.height)
                     let r = min(radius, rest.width / 2)
                     context.fill(Path { $0.addRoundedRect(in: rest, cornerSize: CGSize(width: r, height: r)) },
                                  with: .color(Color.limitTrack))
