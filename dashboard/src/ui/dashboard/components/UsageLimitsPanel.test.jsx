@@ -582,6 +582,8 @@ describe("UsageLimitsPanel", () => {
     expect(legend).not.toBeNull();
     expect(group.querySelectorAll("[data-limit-segment]")).toHaveLength(4);
     expect([...group.querySelectorAll("[data-limit-segment]")].map((el) => el.style.flexGrow)).toEqual(["45", "13", "3", "0.4"]);
+    expect(Number(group.querySelector("[data-limit-unallocated-used]").style.flexGrow)).toBeCloseTo(0.6);
+    expect(Number(group.querySelector("[data-limit-remainder]").style.flexGrow)).toBe(38);
     expect(within(group).getByText("62%")).toBeInTheDocument();
     expect(within(legend).getByText("Grok Build")).toBeInTheDocument();
     expect(within(legend).getByText(copy("limits.label.grok_chat"))).toBeInTheDocument();

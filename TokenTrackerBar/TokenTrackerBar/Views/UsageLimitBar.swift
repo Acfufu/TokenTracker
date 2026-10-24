@@ -70,9 +70,11 @@ struct UsageLimitBar: View, Animatable {
                 // Reserve gaps inside the track, then distribute the remaining
                 // pixels proportionally, including the unused pool.
                 let gap = min(align(1.5), size.width / 100)
-                let widths = UsageLimitSegmentLayout.widths(percentages: segments, trackWidth: Double(size.width), gap: Double(gap))
+                let unallocated = max(0, min(100, percent) - segments.reduce(0, +))
+                let shares = segments + [unallocated]
+                let widths = UsageLimitSegmentLayout.widths(percentages: shares, trackWidth: Double(size.width), gap: Double(gap))
                 var x: CGFloat = 0
-                for index in segments.indices where widths[index] > 0 && x < size.width {
+                for index in shares.indices where widths[index] > 0 && x < size.width {
                     let width = CGFloat(widths[index])
                     let slice = CGRect(x: x, y: 0, width: width, height: size.height)
                     let r = min(radius, width / 2)
