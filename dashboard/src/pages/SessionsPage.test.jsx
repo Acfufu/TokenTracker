@@ -193,6 +193,16 @@ const makeThreadSession = (overrides) => ({
 });
 
 describe("SessionsPage", () => {
+  it("shows a structural skeleton while the initial sessions request is pending", () => {
+    getSessions.mockReturnValue(new Promise(() => {}));
+    render(<SessionsPage />);
+
+    expect(screen.getByTestId("sessions-skeleton")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading sessions…");
+    expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Processed locally/)).not.toBeInTheDocument();
+  });
+
   it("shows a reported zero first-response wait as a measured sample", async () => {
     const row = makeThreadSession({ title: "Instant response", performance: {
       estimated_request_count: 0, estimated_tokens_per_second: null,

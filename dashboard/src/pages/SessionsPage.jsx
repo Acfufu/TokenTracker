@@ -1,5 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Calendar, ChevronRight, Copy, Info, Loader2, RefreshCw, Search, X as XIcon } from "lucide-react";
+import { Calendar, ChevronRight, Copy, Info, RefreshCw, Search, X as XIcon } from "lucide-react";
 import { Input, Select } from "../ui/components";
 import { Tooltip } from "@base-ui/react/tooltip";
 import { SearchableSelect } from "../ui/components/SearchableSelect.jsx";
@@ -126,6 +126,73 @@ function SessionSummaryHelp() {
         </Tooltip.Positioner>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+function SessionSkeletonBone({ className }) {
+  return (
+    <span
+      className={cn("block rounded bg-oai-gray-200/70 animate-pulse dark:bg-oai-gray-800/70", className)}
+      aria-hidden="true"
+    />
+  );
+}
+
+function SessionSkeletonRow({ index }) {
+  const titleWidths = ["w-44", "w-32", "w-52", "w-36", "w-48", "w-40"];
+  const metaWidths = ["w-24", "w-32", "w-20"];
+
+  return (
+    <li className="sessions-row sessions-row-grid py-3" aria-hidden="true">
+      <div className="sessions-row-identity min-w-0">
+        <SessionSkeletonBone className="h-4 w-4 rounded-full" />
+        <div className="min-w-0 space-y-2">
+          <SessionSkeletonBone className={cn("h-4", titleWidths[index % titleWidths.length])} />
+          <div className="flex min-w-0 flex-wrap gap-2">
+            {metaWidths.map((width, metaIndex) => (
+              <SessionSkeletonBone key={metaIndex} className={cn("h-3", width)} />
+            ))}
+          </div>
+        </div>
+      </div>
+      <dl className="sessions-row-metrics">
+        <div className="sessions-row-value"><SessionSkeletonBone className="ml-auto h-4 w-14" /></div>
+        <div className="sessions-row-value"><SessionSkeletonBone className="ml-auto h-4 w-12" /></div>
+        <div className="sessions-row-value"><SessionSkeletonBone className="ml-auto h-4 w-16" /></div>
+      </dl>
+      <SessionSkeletonBone className="sessions-row-action h-8 w-8 rounded-md" />
+    </li>
+  );
+}
+
+function SessionsSkeleton({ rows = 6 }) {
+  return (
+    <div data-testid="sessions-skeleton" role="status" aria-busy="true" aria-live="polite">
+      <span className="sr-only">{copy("sessions.loading")}</span>
+      <section className="mb-6 flex items-start gap-3 rounded-lg border border-oai-gray-200 px-4 py-3 dark:border-oai-gray-800" aria-hidden="true">
+        <dl className="sessions-kpis grid min-w-0 flex-1 grid-cols-2 gap-y-3 sm:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index}>
+              <SessionSkeletonBone className="h-3 w-16" />
+              <SessionSkeletonBone className={cn("mt-2 h-6", index === 2 ? "w-20" : "w-14")} />
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <div className="sessions-row-grid sessions-list-header border-b border-oai-gray-200 py-2 dark:border-oai-gray-800" aria-hidden="true">
+        <SessionSkeletonBone className="h-3 w-16" />
+        <SessionSkeletonBone className="ml-auto h-3 w-10" />
+        <SessionSkeletonBone className="ml-auto h-3 w-9" />
+        <SessionSkeletonBone className="ml-auto h-3 w-10" />
+        <span />
+      </div>
+
+      <ul className="divide-y divide-oai-gray-200 dark:divide-oai-gray-800" aria-hidden="true">
+        <li className="pb-2 pt-5"><SessionSkeletonBone className="h-3 w-24" /></li>
+        {Array.from({ length: rows }, (_, index) => <SessionSkeletonRow key={index} index={index} />)}
+      </ul>
+    </div>
   );
 }
 
@@ -678,20 +745,22 @@ export function SessionsPage() {
             </section>
           ) : null}
 
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 text-xs tabular-nums text-oai-gray-500 dark:text-oai-gray-400">
-              <span>
-                {grouped.foldedCount > 0 ? copy("sessions.thread.result_count", { roots: grouped.roots.length, subagents: grouped.foldedCount }) : copy("sessions.filter.result_count", { filtered: filtered.length, total: allSessions.length })}
-              </span>
-              {anyFilter ? <button type="button" onClick={clearFilters} className="inline-flex min-h-10 items-center rounded text-oai-gray-700 underline decoration-oai-gray-300 underline-offset-4 hover:text-oai-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 dark:text-oai-gray-200 dark:decoration-oai-gray-600 dark:hover:text-white sm:min-h-0">{copy("sessions.filter.clear")}</button> : null}
+          {!isLoading && data ? (
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 text-xs tabular-nums text-oai-gray-500 dark:text-oai-gray-400">
+                <span>
+                  {grouped.foldedCount > 0 ? copy("sessions.thread.result_count", { roots: grouped.roots.length, subagents: grouped.foldedCount }) : copy("sessions.filter.result_count", { filtered: filtered.length, total: allSessions.length })}
+                </span>
+                {anyFilter ? <button type="button" onClick={clearFilters} className="inline-flex min-h-10 items-center rounded text-oai-gray-700 underline decoration-oai-gray-300 underline-offset-4 hover:text-oai-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 dark:text-oai-gray-200 dark:decoration-oai-gray-600 dark:hover:text-white sm:min-h-0">{copy("sessions.filter.clear")}</button> : null}
+              </div>
+              <div className="flex min-w-0 items-center gap-2">
+                <Select ariaLabel={copy("sessions.group.aria")} options={groupOptions} value={groupMode} onValueChange={setGroupMode} className="sessions-filter-trigger h-11 min-w-0 max-w-40 px-2.5 text-xs sm:h-8" />
+                <Select ariaLabel={copy("sessions.sort.aria")} options={sortOptions} value={sortMode} onValueChange={setSortMode} className="sessions-filter-trigger h-11 min-w-0 max-w-44 px-2.5 text-xs sm:h-8" align="end" />
+              </div>
             </div>
-            <div className="flex min-w-0 items-center gap-2">
-              <Select ariaLabel={copy("sessions.group.aria")} options={groupOptions} value={groupMode} onValueChange={setGroupMode} className="sessions-filter-trigger h-11 min-w-0 max-w-40 px-2.5 text-xs sm:h-8" />
-              <Select ariaLabel={copy("sessions.sort.aria")} options={sortOptions} value={sortMode} onValueChange={setSortMode} className="sessions-filter-trigger h-11 min-w-0 max-w-44 px-2.5 text-xs sm:h-8" align="end" />
-            </div>
-          </div>
+          ) : null}
 
-          {truncated ? (
+          {!isLoading && truncated ? (
             <p className="mb-4 text-xs text-oai-gray-500 dark:text-oai-gray-400">
               {copy("sessions.truncated", { shown: data.returned_count, total: data.session_count })}
             </p>
@@ -710,10 +779,7 @@ export function SessionsPage() {
               </button>
             </div>
           ) : isLoading ? (
-            <div className="flex items-center gap-2 py-16 text-sm text-oai-gray-500 dark:text-oai-gray-400">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              {copy("sessions.loading")}
-            </div>
+            <SessionsSkeleton />
           ) : filtered.length === 0 ? (
             <div className="rounded-xl border border-dashed border-oai-gray-200 py-16 text-center dark:border-oai-gray-800">
               <p className="text-sm font-medium text-oai-black dark:text-white">
@@ -807,9 +873,11 @@ export function SessionsPage() {
             </>
           )}
 
-          <p className="mt-8 max-w-3xl text-xs leading-5 text-oai-gray-600 dark:text-oai-gray-300">
-            {copy("sessions.privacy")}
-          </p>
+          {!isLoading ? (
+            <p className="mt-8 max-w-3xl text-xs leading-5 text-oai-gray-600 dark:text-oai-gray-300">
+              {copy("sessions.privacy")}
+            </p>
+          ) : null}
         </div>
       </main>
       {detailSession ? <SessionDetailModal session={detailSession} subagents={detailSubagents} onClose={closeDetail} /> : null}
