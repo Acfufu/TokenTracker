@@ -198,16 +198,11 @@ export function LimitsPage() {
     <div className="flex flex-col flex-1 text-oai-black dark:text-oai-white font-oai antialiased">
       <main className="flex-1 pt-8 sm:pt-10 pb-12 sm:pb-16">
         <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <div className="flex flex-row items-start justify-between gap-4 mb-8">
-            <div className="min-w-0">
-              <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-oai-black dark:text-white mb-3">
-                {copy("nav.limits")}
-              </h1>
-              <p className="text-oai-gray-500 dark:text-oai-gray-400 text-sm sm:text-base">
-                {copy("limits.page.subtitle")}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
+          <div className="mb-6 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 sm:mb-8 sm:gap-x-4 sm:gap-y-3">
+            <h1 className="min-w-0 text-2xl sm:text-4xl font-semibold tracking-tight text-oai-black dark:text-white">
+              {copy("nav.limits")}
+            </h1>
+            <div className="flex items-center gap-1 sm:gap-2">
               {alerts.enabled && alerts.permissionBlocked ? <NotificationBlockedBubble /> : null}
               <button
                 type="button"
@@ -215,7 +210,7 @@ export function LimitsPage() {
                 disabled={isRefreshing}
                 aria-label={copy("limits.page.refresh")}
                 title={copy("limits.page.refresh")}
-                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 disabled:opacity-50"
+                className="shrink-0 inline-flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 disabled:opacity-50"
               >
                 <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} aria-hidden />
               </button>
@@ -223,7 +218,7 @@ export function LimitsPage() {
                 <Popover.Trigger
                   aria-label={copy("limits.page.openSubscriptions")}
                   title={copy("limits.page.openSubscriptions")}
-                  className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+                  className="shrink-0 inline-flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
                 >
                   <CalendarClock className="h-4 w-4" aria-hidden />
                 </Popover.Trigger>
@@ -243,7 +238,7 @@ export function LimitsPage() {
                 onClick={() => void alerts.setEnabled(!alerts.enabled)}
                 aria-label={alerts.enabled ? copy("limits.alert.disable") : copy("limits.alert.enable")}
                 title={alerts.enabled ? copy("limits.alert.disable") : copy("limits.alert.enable")}
-                className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 ${
+                className={`inline-flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 ${
                   alerts.enabled && alerts.permissionBlocked
                     ? "text-amber-600 dark:text-amber-400"
                     : "text-oai-gray-600 dark:text-oai-gray-400 hover:text-oai-black dark:hover:text-white"
@@ -255,11 +250,14 @@ export function LimitsPage() {
                 to="/settings?section=limits"
                 aria-label={copy("limits.page.openSettings")}
                 title={copy("limits.page.openSettings")}
-                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+                className="shrink-0 inline-flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-oai-gray-200 dark:border-oai-gray-800 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white transition-colors no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
               >
                 <SettingsIcon className="h-4 w-4" aria-hidden />
               </Link>
             </div>
+            <p className="col-span-2 hidden sm:block sm:text-base text-oai-gray-500 dark:text-oai-gray-400">
+              {copy("limits.page.subtitle")}
+            </p>
           </div>
 
           <span role="status" className="sr-only">
@@ -292,7 +290,7 @@ export function LimitsPage() {
             <>
               {error ? (
                 <p className="mb-4 text-sm text-red-500 dark:text-red-400">
-                  {copy("shared.error.prefix", { error })}
+                  {error}
                 </p>
               ) : null}
               {subscriptionsError ? (

@@ -1,5 +1,4 @@
 import React from "react";
-import { Card } from "../ui/components";
 import { cn } from "../lib/cn";
 
 /** 与 UsageLimitsPanel 的 DEFAULT_ORDER 及每组最多条数一致 */
@@ -28,32 +27,26 @@ function SkeletonBarRow() {
   );
 }
 
-/** 对齐 ToolGroup：图标 14px + 名称行 */
+/** Match the provider cards shown after limits load. */
 function SkeletonProvider({ bars, index }) {
   const nameW = index % 3 === 0 ? "w-24" : index % 3 === 1 ? "w-20" : "w-[4.5rem]";
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-1.5">
-        <Bone className="h-[14px] w-[14px] rounded shrink-0" />
+    <div className="rounded-xl border border-oai-gray-200 bg-white dark:border-oai-gray-800 dark:bg-oai-gray-900">
+      <div className="flex items-center gap-3 border-b border-oai-gray-200 px-4 py-4 dark:border-oai-gray-800 sm:px-5">
+        <Bone className="h-[22px] w-[22px] shrink-0 rounded" />
         <Bone className={cn("h-4", nameW)} />
       </div>
-      {Array.from({ length: bars }, (_, i) => (
-        <SkeletonBarRow key={i} />
-      ))}
+      <div className="flex flex-col gap-2 px-4 py-4 sm:px-5">
+        {Array.from({ length: bars }, (_, i) => <SkeletonBarRow key={i} />)}
+      </div>
     </div>
   );
 }
 
-/** 结构贴合有数据时的 UsageLimitsPanel（Card + 标题 + 各工具组与进度行） */
 export function LimitsPageSkeleton() {
   return (
-    <Card>
-      <div className="flex flex-col gap-3">
-        <Bone className="h-3.5 w-28" />
-        {PROVIDER_BAR_COUNTS.map((bars, i) => (
-          <SkeletonProvider key={i} bars={bars} index={i} />
-        ))}
-      </div>
-    </Card>
+    <div className="flex flex-col gap-3" aria-hidden="true">
+      {PROVIDER_BAR_COUNTS.map((bars, i) => <SkeletonProvider key={i} bars={bars} index={i} />)}
+    </div>
   );
 }

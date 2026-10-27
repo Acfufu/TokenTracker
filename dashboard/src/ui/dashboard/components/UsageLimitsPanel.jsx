@@ -1,6 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, Gift, Clock as ClockIcon, Infinity as InfinityIcon } from "lucide-react";
-import { Card } from "../../components";
+import { AlertCircle, ChevronDown, Gift, Clock as ClockIcon, Infinity as InfinityIcon } from "lucide-react";
 import { FadeIn } from "../../foundation/FadeIn.jsx";
 import { copy, getCopyLocale } from "../../../lib/copy";
 import { LIMIT_DISPLAY_MODES } from "../../../hooks/use-limits-display-prefs.js";
@@ -206,13 +205,13 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
       <Tooltip text={title} />
       <span
         data-limit-label=""
-        className="text-[11px] text-oai-gray-500 dark:text-oai-gray-400 shrink-0 whitespace-nowrap"
+        className="text-xs sm:text-sm text-oai-gray-500 dark:text-oai-gray-400 shrink-0 whitespace-nowrap"
         style={{ width: "var(--tt-limits-label-w)" }}
       >
         {label}
       </span>
       {segments ? (
-        <div data-limit-segments="" className="relative flex flex-1 h-1.5 overflow-hidden" style={{ gap: "min(2px, 1%)" }}>
+        <div data-limit-segments="" className="relative flex min-w-0 flex-1 h-1.5 overflow-hidden" style={{ gap: "min(2px, 1%)" }}>
           {segments.map((segment, index) => (
             <div
               key={segment.key}
@@ -229,7 +228,7 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
           {paceX != null && <PaceMarker paceX={paceX} paceOver={paceOver} />}
         </div>
       ) : (
-        <div className="relative flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
+        <div className="relative min-w-0 flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
           <div
             className={`${fillColor} rounded-full h-full transition-[width] duration-500 ease-out`}
             style={{ width: `${widthPct}%`, minWidth: displayPct > 0 ? "3px" : 0 }}
@@ -237,11 +236,11 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
           {paceX != null && <PaceMarker paceX={paceX} paceOver={paceOver} />}
         </div>
       )}
-      <span className="text-[11px] tabular-nums text-oai-gray-500 dark:text-oai-gray-400 w-9 text-right shrink-0 whitespace-nowrap">
+      <span className="text-xs sm:text-sm tabular-nums text-oai-gray-600 dark:text-oai-gray-300 w-11 text-right shrink-0 whitespace-nowrap">
         {labelPct}%
       </span>
       {reset && (
-        <span className="text-[10px] text-oai-gray-400 dark:text-oai-gray-500 w-6 text-right shrink-0">{reset}</span>
+        <span className="text-xs tabular-nums text-oai-gray-400 dark:text-oai-gray-500 w-8 text-right shrink-0">{reset}</span>
       )}
     </div>
   );
@@ -411,60 +410,50 @@ function StatusBadge({ label, age = null, tone = "live", tooltip = null }) {
 function ToolGroup({ name, providerId, children, expandable = false, expanded = false, onToggle, badge = null, rightAdornment = null, toggleOnHeader = false }) {
   const providerKey = limitProviderIconKey(providerId);
   const header = (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-3">
       {providerKey ? (
-        <ProviderIcon provider={providerKey} size={14} className={LIMITS_PROVIDER_ICON_CLASS} />
+        <ProviderIcon provider={providerKey} size={22} className={LIMITS_PROVIDER_ICON_CLASS} />
       ) : null}
-      <span className="text-sm font-medium text-oai-black dark:text-oai-white">{name}</span>
+      <span className="text-base font-semibold text-oai-black dark:text-oai-white">{name}</span>
       {rightAdornment ? <span className="shrink-0">{rightAdornment}</span> : null}
       {badge}
     </div>
   );
+  const cardClass = "rounded-xl border border-oai-gray-200 bg-white dark:border-oai-gray-800 dark:bg-oai-gray-900";
+  const headerClass = "flex w-full items-center justify-between gap-3 border-b border-oai-gray-200 px-4 py-4 text-left dark:border-oai-gray-800 sm:px-5";
+  const body = <div className="flex flex-col gap-2 px-4 py-4 sm:px-5">{children}</div>;
 
   if (!expandable) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {header}
-        {children}
-      </div>
-    );
+    return <div className={cardClass}><div className={headerClass}>{header}</div>{body}</div>;
   }
 
   if (toggleOnHeader) {
     return (
-      <div className="flex flex-col gap-1.5">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={onToggle}
-          className="flex w-full items-center justify-between rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
-        >
+      <div className={cardClass}>
+        <button type="button" aria-expanded={expanded} onClick={onToggle}
+          className={`${headerClass} rounded-t-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oai-brand-500`}>
           {header}
-          <ChevronDown size={13} aria-hidden className={`text-oai-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          <ChevronDown size={16} aria-hidden className={`shrink-0 text-oai-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
         </button>
-        {children}
+        {body}
       </div>
     );
   }
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-expanded={expanded}
-      onClick={onToggle}
+    <div role="button" tabIndex={0} aria-expanded={expanded} onClick={onToggle}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onToggle?.();
         }
       }}
-      // Expanding reveals detail (e.g. Grok's per-product slices), so keyboard
-      // focus needs the same visible ring as the card's other toggles.
-      className="flex flex-col gap-1.5 -mx-1.5 px-1.5 py-1 rounded-lg cursor-pointer transition-colors hover:bg-oai-gray-50 dark:hover:bg-oai-gray-800/40 aria-expanded:bg-oai-gray-50 dark:aria-expanded:bg-oai-gray-800/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
-    >
-      {header}
-      {children}
+      className={`${cardClass} cursor-pointer transition-colors hover:border-oai-gray-300 dark:hover:border-oai-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500`}>
+      <div className={headerClass}>
+        {header}
+        <ChevronDown size={16} aria-hidden className={`shrink-0 text-oai-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </div>
+      {body}
     </div>
   );
 }
@@ -517,12 +506,12 @@ function SubscriptionBar({ subscription, now, mode = LIMIT_DISPLAY_MODES.USED })
   return (
     <div className="flex items-center gap-2">
       <span
-        className="text-[11px] text-oai-gray-500 dark:text-oai-gray-400 shrink-0 whitespace-nowrap"
+        className="text-xs sm:text-sm text-oai-gray-500 dark:text-oai-gray-400 shrink-0 whitespace-nowrap"
         style={{ width: "var(--tt-limits-label-w)" }}
       >
         {copy("subscriptions.inline.label")}
       </span>
-      <div className="relative flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
+      <div className="relative min-w-0 flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
         <div
           className={`${
             expired ? "bg-red-500" : nearExpiry ? "bg-amber-500" : "bg-blue-500"
@@ -530,11 +519,11 @@ function SubscriptionBar({ subscription, now, mode = LIMIT_DISPLAY_MODES.USED })
           style={{ width: `${renderWidth}%`, minWidth: renderWidth > 0 ? "3px" : 0 }}
         />
       </div>
-      <span className="text-[11px] tabular-nums text-oai-gray-500 dark:text-oai-gray-400 w-9 text-right shrink-0 whitespace-nowrap">
+      <span className="text-xs sm:text-sm tabular-nums text-oai-gray-600 dark:text-oai-gray-300 w-11 text-right shrink-0 whitespace-nowrap">
         {labelPct}
       </span>
       <span
-        className={`text-[10px] tabular-nums shrink-0 whitespace-nowrap w-6 text-right ${
+        className={`text-xs tabular-nums shrink-0 whitespace-nowrap w-8 text-right ${
           expired ? "text-oai-error" : "text-oai-gray-400 dark:text-oai-gray-500"
         }`}
       >
@@ -584,11 +573,15 @@ function SubscriptionDetail({ subscription, now }) {
 const DEFAULT_ORDER = LIMIT_PROVIDER_IDS;
 
 function StatusLine({ children, tone = "neutral" }) {
-  const color =
-    tone === "error"
-      ? "text-red-600 dark:text-red-400"
-      : "text-oai-gray-500 dark:text-oai-gray-400";
-  return <div className={`text-[11px] leading-snug ${color}`}>{children}</div>;
+  if (tone === "error") {
+    return (
+      <div className="flex items-start gap-2 text-xs leading-relaxed text-oai-gray-600 dark:text-oai-gray-300">
+        <AlertCircle size={15} aria-hidden className="mt-0.5 shrink-0 text-red-500 dark:text-red-400" />
+        <span className="min-w-0 break-words">{children}</span>
+      </div>
+    );
+  }
+  return <div className="text-[11px] leading-snug text-oai-gray-500 dark:text-oai-gray-400">{children}</div>;
 }
 
 function LimitWindowSection({ rows, mode, extra = null, expanded = false }) {
@@ -644,7 +637,7 @@ function ResetBankRow({ row }) {
       >
         {row.label}
       </span>
-      <div className="relative flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
+      <div className="relative min-w-0 flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
         <div
           className="bg-oai-gray-400 dark:bg-oai-gray-500 rounded-full h-full transition-[width] duration-500 ease-out"
           style={{ width: `${widthPct}%`, minWidth: widthPct > 0 ? "3px" : 0 }}
@@ -692,7 +685,7 @@ function ZcodeResetBankSection({ data }) {
         {copy("limits.zcode.reset_bank.title")}
       </div>
       {data.error ? (
-        <StatusLine tone="error">{copy("shared.error.prefix", { error: data.error })}</StatusLine>
+        <StatusLine tone="error">{data.error}</StatusLine>
       ) : groups.map((group) => (
         <div key={group.key} className="flex items-center gap-2 text-[11px]">
           <span
@@ -785,7 +778,7 @@ function ZcodeStartPlanSection({ data, mode, now }) {
           style={labelWidth > 0 ? { "--tt-limits-label-w": `${labelWidth}px` } : undefined}
         >
           {data.error ? (
-            <StatusLine tone="error">{copy("shared.error.prefix", { error: data.error })}</StatusLine>
+            <StatusLine tone="error">{data.error}</StatusLine>
           ) : (
             <>
               <LimitWindowSection rows={rows} mode={mode} />
@@ -882,11 +875,11 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
       id,
       <>
         <StatusLine>{copy("limits.status.not_connected")}</StatusLine>
-        {id === "opencodeGo" ? <OpenCodeGoSetupHint onSaved={onKeySaved} /> : null}
-        {id === "commandCode" ? <CommandCodeSetupHint onSaved={onKeySaved} /> : null}
-        {id === "codingPlan" ? <ArkCodingPlanSetupHint /> : null}
-        {id === "agentPlan" ? <ArkAgentPlanSetupHint /> : null}
-        {id === "devin" ? <DevinSetupHint /> : null}
+        {id === "opencodeGo" ? <SetupHint title={copy("limits.opencodeGo.setupHint.title")}><OpenCodeGoSetupHint onSaved={onKeySaved} /></SetupHint> : null}
+        {id === "commandCode" ? <SetupHint title={copy("limits.commandCode.setupHint.title")}><CommandCodeSetupHint onSaved={onKeySaved} /></SetupHint> : null}
+        {id === "codingPlan" ? <SetupHint title={copy("limits.codingPlan.setupHint.title")}><ArkCodingPlanSetupHint /></SetupHint> : null}
+        {id === "agentPlan" ? <SetupHint title={copy("limits.agentPlan.setupHint.title")}><ArkAgentPlanSetupHint /></SetupHint> : null}
+        {id === "devin" ? <SetupHint title={copy("limits.devin.setupHint.title")}><DevinSetupHint /></SetupHint> : null}
       </>,
       expanded,
       onToggle,
@@ -910,15 +903,15 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
     return renderUnlinkedProvider(
       id,
       <>
-        <StatusLine tone="error">{copy("shared.error.prefix", { error: data.error })}</StatusLine>
+        <StatusLine tone="error">{data.error}</StatusLine>
         {id === "kiro"
           ? renderProviderExtra(PROVIDER_LIMIT_SPECS.kiro.extra, data)
           : null}
-        {id === "opencodeGo" ? <OpenCodeGoSetupHint onSaved={onKeySaved} /> : null}
-        {id === "commandCode" ? <CommandCodeSetupHint onSaved={onKeySaved} /> : null}
-        {id === "codingPlan" ? <ArkCodingPlanSetupHint /> : null}
-        {id === "agentPlan" ? <ArkAgentPlanSetupHint /> : null}
-        {id === "devin" ? <DevinSetupHint /> : null}
+        {id === "opencodeGo" ? <SetupHint title={copy("limits.opencodeGo.setupHint.title")}><OpenCodeGoSetupHint onSaved={onKeySaved} /></SetupHint> : null}
+        {id === "commandCode" ? <SetupHint title={copy("limits.commandCode.setupHint.title")}><CommandCodeSetupHint onSaved={onKeySaved} /></SetupHint> : null}
+        {id === "codingPlan" ? <SetupHint title={copy("limits.codingPlan.setupHint.title")}><ArkCodingPlanSetupHint /></SetupHint> : null}
+        {id === "agentPlan" ? <SetupHint title={copy("limits.agentPlan.setupHint.title")}><ArkAgentPlanSetupHint /></SetupHint> : null}
+        {id === "devin" ? <SetupHint title={copy("limits.devin.setupHint.title")}><DevinSetupHint /></SetupHint> : null}
       </>,
       expanded,
       onToggle,
@@ -1153,6 +1146,15 @@ function EnvCredentialNotice({ providerId, data, onSaved }) {
   );
 }
 
+function SetupHint({ title, children }) {
+  return (
+    <div className="text-xs text-oai-gray-600 dark:text-oai-gray-300" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+      <div className="font-medium text-oai-gray-800 dark:text-oai-gray-100">{title}</div>
+      {children}
+    </div>
+  );
+}
+
 // OpenCode Go limits come from OpenCode's official authenticated usage API
 // (GET /zen/go/v1/usage, Bearer OPENCODE_GO_API_KEY) once the user subscribes.
 // The key is entered here and stored by the backend in a 0600 file — never in
@@ -1160,8 +1162,7 @@ function EnvCredentialNotice({ providerId, data, onSaved }) {
 // (issue 837). The panel only ever sends the key to the loopback backend.
 function OpenCodeGoSetupHint({ onSaved }) {
   return (
-    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
-      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">{copy("limits.opencodeGo.setupHint.title")}</div>
+    <div className="mt-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
       <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">{copy("limits.opencodeGo.setupHint.subtitle")}</div>
 
       <ol className="mt-2.5 space-y-2.5">
@@ -1202,10 +1203,7 @@ function CommandCodeSetupHint({ onSaved }) {
   const loginSnippet = commandCodeLoginSnippet();
 
   return (
-    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
-      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">
-        {copy("limits.commandCode.setupHint.title")}
-      </div>
+    <div className="mt-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
       <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">
         {copy("limits.commandCode.setupHint.subtitle")}
       </div>
@@ -1234,10 +1232,7 @@ function DevinSetupHint() {
   const loginSnippet = devinLoginSnippet();
 
   return (
-    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
-      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">
-        {copy("limits.devin.setupHint.title")}
-      </div>
+    <div className="mt-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
       <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">
         {copy("limits.devin.setupHint.subtitle")}
       </div>
@@ -1282,8 +1277,7 @@ function ArkCodingPlanSetupHint() {
   };
 
   return (
-    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
-      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">{copy("limits.codingPlan.setupHint.title")}</div>
+    <div className="mt-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
       <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">{copy("limits.codingPlan.setupHint.subtitle")}</div>
 
       <ol className="mt-2.5 space-y-2.5">
@@ -1345,8 +1339,7 @@ function ArkAgentPlanSetupHint() {
   };
 
   return (
-    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
-      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">{copy("limits.agentPlan.setupHint.title")}</div>
+    <div className="mt-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
       <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">{copy("limits.agentPlan.setupHint.subtitle")}</div>
 
       <ol className="mt-2.5 space-y-2.5">
@@ -1432,9 +1425,6 @@ export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, gr
   const effectiveMode = displayMode === LIMIT_DISPLAY_MODES.REMAINING
     ? LIMIT_DISPLAY_MODES.REMAINING
     : LIMIT_DISPLAY_MODES.USED;
-  const modeLabel = effectiveMode === LIMIT_DISPLAY_MODES.REMAINING
-    ? copy("limits.settings.display_mode_remaining")
-    : copy("limits.settings.display_mode_used");
 
   // Refresh countdowns/remaining labels once a minute without re-fetching.
   useEffect(() => {
@@ -1491,19 +1481,14 @@ export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, gr
 
   return (
     <FadeIn delay={0.15}>
-      <Card>
-        <div
+      <div
           ref={containerRef}
           data-limit-label-group=""
           className="flex flex-col gap-3"
           style={labelWidth > 0 ? { "--tt-limits-label-w": `${labelWidth}px` } : undefined}
         >
-          <h3 className="text-sm font-medium text-oai-gray-500 dark:text-oai-gray-300 uppercase tracking-wide">
-            {copy("limits.panel.title")}{copy("limits.panel.mode_separator")}{modeLabel}
-          </h3>
           {groups.length > 0 ? groups : <StatusLine>{copy("limits.status.all_hidden")}</StatusLine>}
-        </div>
-      </Card>
+      </div>
     </FadeIn>
   );
 }

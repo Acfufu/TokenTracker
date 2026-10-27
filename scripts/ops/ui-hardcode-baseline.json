@@ -7,7 +7,7 @@
   },
   "totals": {
     "colors": 404,
-    "rawText": 163
+    "rawText": 165
   },
   "files": {
     "dashboard/src/components/InsforgeUserHeaderControls.jsx": {
@@ -427,19 +427,21 @@
     },
     "dashboard/src/ui/dashboard/components/UsageLimitsPanel.jsx": {
       "colors": 0,
-      "rawText": 1,
+      "rawText": 2,
       "rawTextTokens": [
+        "); const cardClass = \"rounded-xl border border-oai-gray-200 bg-white dark:border-oai-gray-800 dark:bg-oai-gray-900\"; const headerClass = \"flex w-full items-center justify-between gap-3 border-b border-oai-gray-200 px-4 py-4 text-left dark:border-oai-gray-800 sm:px-5\"; const body =",
         "0 ? groups :"
       ]
     },
     "dashboard/src/ui/dashboard/components/UsageLimitsPanel.test.jsx": {
       "colors": 0,
-      "rawText": 5,
+      "rawText": 6,
       "rawTextTokens": [
         ", ); // Brand + tier, without repeating \"Coding Plan\" (title: \"Ark Coding Plan Lite\"). expect(screen.getByText(\"Ark Coding Plan Lite\")).toBeInTheDocument(); expect(screen.getByText(\"5h\")).toBeInTheDocument(); expect(screen.getByText(\"Weekly\")).toBeInTheDocument(); expect(screen.getByText(\"Monthly\")).toBeInTheDocument(); expect(screen.getByText(\"33%\")).toBeInTheDocument(); expect(screen.getByText(\"16%\")).toBeInTheDocument(); expect(screen.getByText(\"9%\")).toBeInTheDocument(); // Not-configured fallback shows the Ark CLI setup guide. rerender(",
         ", ); // Brand name only — no plan_label suffix to avoid \"OpenCode Go Go\". expect(screen.getByText(\"OpenCode Go\")).toBeInTheDocument(); expect(screen.getByText(\"5h\")).toBeInTheDocument(); expect(screen.getByText(\"Weekly\")).toBeInTheDocument(); expect(screen.getByText(\"Monthly\")).toBeInTheDocument(); expect(screen.getByText(\"12%\")).toBeInTheDocument(); expect(screen.getByText(\"30%\")).toBeInTheDocument(); expect(screen.getByText(\"60%\")).toBeInTheDocument(); // Not-configured fallback. rerender(",
         ", ); expect(screen.getByText(\"Codex\")).toBeInTheDocument(); const row = screen.getByText(\"Credits\").closest(\"div\"); expect(within(row).getByText(\"",
         ", ); expect(screen.getByText(\"Cursor\")).toBeInTheDocument(); rerender(",
+        ", ); expect(screen.getByText(\"Kimi\")).toBeInTheDocument(); expect(screen.getByText(\"Weekly\")).toBeInTheDocument(); expect(screen.getByText(\"5h\")).toBeInTheDocument(); expect(screen.getByText(\"Total\")).toBeInTheDocument(); expect(screen.getByText(\"Parallel: 20\")).toBeInTheDocument(); expect(screen.getByText(\"64%\")).toBeInTheDocument(); expect(screen.getByText(\"4%\")).toBeInTheDocument(); expect(screen.getByText(\"1%\")).toBeInTheDocument(); rerender(",
         "/80[\\s\\S]*200[\\s\\S]*120/.test(text))).toBe(true); rerender("
       ]
     },

@@ -365,7 +365,7 @@ describe("LimitsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Couldn't refresh limits.")).toBeInTheDocument();
     });
-    expect(screen.getByText("Error: Request failed with HTTP 500")).toBeInTheDocument();
+    expect(screen.getByText("Request failed with HTTP 500")).toBeInTheDocument();
     // The failed refresh must not wipe the rows already on screen.
     expect(screen.getByTestId("limits-panel")).toHaveTextContent("Kimi connected");
   });
