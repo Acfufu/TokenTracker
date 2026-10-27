@@ -518,6 +518,7 @@
   "sessions.card.edit_session_value": "{{edits}} / {{sessions}}",
   "sessions.card.edit_turn_count": "{{count}} 編集ターン",
   "sessions.card.tokens_edit": "編集あたりの Token",
+  "sessions.card.scroll": "セッション効率テーブルを横方向にスクロール",
   "sessions.card.sample": "{{sessions}} セッション · {{edits}} 編集ターン",
   "sessions.card.methodology_label": "計測方法",
   "sessions.card.methodology": "編集 = 観測された編集ツールを含むユーザーターン。初回完了 = 編集ターンが1回だけで、同じ依頼の繰り返しがない状態。",

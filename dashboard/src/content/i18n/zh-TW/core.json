@@ -553,6 +553,7 @@
   "sessions.card.edit_session_value": "{{edits}} / {{sessions}}",
   "sessions.card.edit_turn_count": "{{count}} 個編輯回合",
   "sessions.card.tokens_edit": "單次編輯 Token",
+  "sessions.card.scroll": "橫向捲動工作階段效率表格",
   "sessions.card.sample": "{{sessions}} 個工作階段 · {{edits}} 個編輯回合",
   "sessions.card.methodology_label": "統計口徑",
   "sessions.card.methodology": "編輯 = 一個包含已觀測編輯工具的使用者回合。一次完成 = 僅有一個編輯回合，且使用者未重複提出相同要求。",

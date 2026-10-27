@@ -1,8 +1,8 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
 import { copy } from "../lib/copy";
 
-/** Keep horizontal navigation reachable above long leaderboard tables. */
-export function LeaderboardTableScroll({ children }) {
+/** Keep horizontal navigation reachable above long scrollable tables. */
+export function LeaderboardTableScroll({ children, wrapperClassName = "hidden w-full sm:block", label }) {
   const topRef = useRef(null);
   const tableRef = useRef(null);
   const [scrollWidth, setScrollWidth] = useState(0);
@@ -26,12 +26,12 @@ export function LeaderboardTableScroll({ children }) {
   }, [scrollWidth]);
 
   return (
-    <div className="hidden w-full sm:block">
+    <div className={wrapperClassName}>
       <div
         ref={topRef}
         hidden={!hasOverflow}
         role="region"
-        aria-label={copy("leaderboard.horizontal_scroll")}
+        aria-label={label || copy("leaderboard.horizontal_scroll")}
         tabIndex={0}
         className="oai-scrollbar h-4 w-full overflow-x-auto overflow-y-hidden border-b border-oai-gray-200 dark:border-oai-gray-800 [scrollbar-gutter:auto]"
         onScroll={(event) => { tableRef.current.scrollLeft = event.currentTarget.scrollLeft; }}

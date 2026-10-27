@@ -515,6 +515,7 @@
   "sessions.card.edit_session_value": "{{edits}} / {{sessions}}",
   "sessions.card.edit_turn_count": "{{count}} Bearbeitungsrunden",
   "sessions.card.tokens_edit": "Token je Änderung",
+  "sessions.card.scroll": "Sitzungseffizienz-Tabelle horizontal scrollen",
   "sessions.card.sample": "{{sessions}} Sitzungen · {{edits}} Bearbeitungsrunden",
   "sessions.card.methodology_label": "Messmethode",
   "sessions.card.methodology": "Änderung = eine Benutzerrunde mit einem beobachteten Bearbeitungswerkzeug. Erster Durchlauf = genau eine Bearbeitungsrunde ohne wiederholte Anfrage.",

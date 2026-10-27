@@ -518,6 +518,7 @@
   "sessions.card.edit_session_value": "{{edits}} / {{sessions}}",
   "sessions.card.edit_turn_count": "편집 턴 {{count}}회",
   "sessions.card.tokens_edit": "편집당 Token",
+  "sessions.card.scroll": "세션 효율 표를 가로로 스크롤",
   "sessions.card.sample": "세션 {{sessions}}개 · 편집 턴 {{edits}}회",
   "sessions.card.methodology_label": "측정 방식",
   "sessions.card.methodology": "편집 = 관측된 편집 도구가 포함된 사용자 턴입니다. 한 번에 완료 = 편집 턴이 한 번뿐이고 동일 요청이 반복되지 않은 경우입니다.",

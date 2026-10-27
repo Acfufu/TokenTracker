@@ -621,6 +621,7 @@
   "sessions.card.edit_session_value": "{{edits}} / {{sessions}}",
   "sessions.card.edit_turn_count": "{{count}} 个编辑回合",
   "sessions.card.tokens_edit": "单次编辑 Token",
+  "sessions.card.scroll": "横向滚动会话效率表格",
   "sessions.card.sample": "{{sessions}} 个会话 · {{edits}} 个编辑回合",
   "sessions.card.methodology_label": "统计口径",
   "sessions.card.methodology": "编辑 = 一个包含已观测编辑工具的用户回合。一次完成 = 仅有一个编辑回合，且用户没有重复提出同一请求。",

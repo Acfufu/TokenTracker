@@ -1418,6 +1418,7 @@ sessions.card.model,dashboard,DashboardPage,SessionInsightsCard,model,"Model",,a
 sessions.card.edit_session_value,dashboard,DashboardPage,SessionInsightsCard,edit_session_value,"{{edits}} / {{sessions}}",,active
 sessions.card.edit_turn_count,dashboard,DashboardPage,SessionInsightsCard,edit_turn_count,"{{count}} edit turns",,active
 sessions.card.tokens_edit,dashboard,DashboardPage,SessionInsightsCard,tokens_edit,"Tokens / edit",,active
+sessions.card.scroll,dashboard,DashboardPage,SessionInsightsCard,aria_label,"Scroll session efficiency columns horizontally",,active
 sessions.card.sample,dashboard,DashboardPage,SessionInsightsCard,sample,"{{sessions}} sessions · {{edits}} edit turns",,active
 sessions.card.methodology_label,dashboard,DashboardPage,SessionInsightsCard,methodology_label,"How measured",,active
 sessions.card.methodology,dashboard,DashboardPage,SessionInsightsCard,methodology,"Edit = a user turn containing an observed edit tool. First-pass = exactly one edit turn with no repeated request.",,active

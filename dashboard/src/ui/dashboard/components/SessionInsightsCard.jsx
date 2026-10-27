@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useState } from "react";
 import { Card } from "../../components";
+import { LeaderboardTableScroll } from "../../../components/LeaderboardTableScroll.jsx";
 import { copy } from "../../../lib/copy";
 import { getContextHealth, getSessionInsights } from "../../../lib/api";
 import { useSessionEfficiencyPref } from "../../../hooks/use-session-efficiency-pref.js";
@@ -148,33 +149,33 @@ export function SessionInsightsCard({ from, to }) {
       </div>
 
       {Boolean(models.length) && (
-        <div className="overflow-x-auto oai-scrollbar">
-          <table className="w-full min-w-[440px] text-xs">
+        <LeaderboardTableScroll wrapperClassName="w-full" label={copy("sessions.card.scroll")}>
+          <table className="w-full text-xs">
             <thead className="text-[10px] uppercase tracking-wide text-oai-gray-400">
               <tr>
-                <th className="pb-1.5 text-left font-medium">{copy("sessions.card.model")}</th>
-                <th className="pb-1.5 text-right font-medium">{copy("sessions.card.edit_sessions")}</th>
-                <th className="pb-1.5 text-right font-medium">{copy("sessions.card.first_pass")}</th>
-                <th className="pb-1.5 text-right font-medium">{copy("sessions.card.tokens_edit")}</th>
+                <th className="pb-1.5 text-left font-medium whitespace-nowrap">{copy("sessions.card.model")}</th>
+                <th className="pb-1.5 text-right font-medium whitespace-nowrap">{copy("sessions.card.edit_sessions")}</th>
+                <th className="pb-1.5 text-right font-medium whitespace-nowrap">{copy("sessions.card.first_pass")}</th>
+                <th className="pb-1.5 text-right font-medium whitespace-nowrap">{copy("sessions.card.tokens_edit")}</th>
               </tr>
             </thead>
             <tbody>
               {models.map((row) => (
                 <tr key={row.model} className="border-t border-oai-gray-100 dark:border-oai-gray-800/60">
                   <td className="py-2 pr-2 font-mono text-[11px] truncate max-w-[150px]" title={row.model}>{row.model}</td>
-                  <td className="py-2 pl-2 text-right tabular-nums">
+                  <td className="py-2 pl-2 text-right tabular-nums whitespace-nowrap">
                     {copy("sessions.card.edit_session_value", {
                       edits: count(row.edit_sessions ?? row.productive_sessions ?? 0),
                       sessions: count(row.sessions),
                     })}
                   </td>
-                  <td className="py-2 pl-2 text-right tabular-nums">{pct(row.first_pass_rate ?? row.one_shot_rate)}</td>
-                  <td className="py-2 text-right tabular-nums">{formatCompactTokens(row.tokens_per_edit)}</td>
+                  <td className="py-2 pl-2 text-right tabular-nums whitespace-nowrap">{pct(row.first_pass_rate ?? row.one_shot_rate)}</td>
+                  <td className="py-2 text-right tabular-nums whitespace-nowrap">{formatCompactTokens(row.tokens_per_edit)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </LeaderboardTableScroll>
       )}
 
       {state.context ? (

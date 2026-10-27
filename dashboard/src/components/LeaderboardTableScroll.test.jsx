@@ -27,9 +27,9 @@ describe("LeaderboardTableScroll", () => {
     vi.unstubAllGlobals();
   });
 
-  function renderTable() {
+  function renderTable(props) {
     return render(
-      <LeaderboardTableScroll>
+      <LeaderboardTableScroll {...props}>
         <table><tbody><tr><td>{copy("leaderboard.column.total")}</td></tr></tbody></table>
       </LeaderboardTableScroll>,
     );
@@ -46,6 +46,19 @@ describe("LeaderboardTableScroll", () => {
     expect(viewport.scrollLeft).toBe(350);
     fireEvent.scroll(viewport, { target: { scrollLeft: 640 } });
     expect(top.scrollLeft).toBe(640);
+  });
+
+  it("keeps the leaderboard wrapper class and label when no props are passed", () => {
+    const { container } = renderTable();
+    expect(container.firstElementChild).toHaveClass("hidden", "w-full", "sm:block");
+    expect(screen.getByRole("region", { name: "Scroll leaderboard columns horizontally" })).toBeInTheDocument();
+  });
+
+  it("applies a custom wrapper class and label for other cards", () => {
+    const { container } = renderTable({ wrapperClassName: "w-full", label: "横向滚动会话效率表格" });
+    expect(container.firstElementChild).toHaveClass("w-full");
+    expect(container.firstElementChild).not.toHaveClass("hidden");
+    expect(screen.getByRole("region", { name: "横向滚动会话效率表格" })).toBeInTheDocument();
   });
 
   it("updates overflow visibility and track width when the viewport or table resizes", () => {
