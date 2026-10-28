@@ -775,11 +775,14 @@ test("a slow-but-successful account read finishes in the background and ends the
     JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, sub: "user-1" }),
   ).toString("base64url")}.sig`;
   const prevTimeout = process.env.TOKENTRACKER_HTTP_TIMEOUT_MS;
-  // Callers wait 20 ms; the background read may run up to 5x that (100 ms).
+  // Callers wait 20 ms; the background probe stays gated until we release it so
+  // the mid-poll assertion is not a timing race on fast CI runners.
   process.env.TOKENTRACKER_HTTP_TIMEOUT_MS = "20";
 
   const realFetch = global.fetch;
   let functionCalls = 0;
+  let releaseProbe;
+  const probeGate = new Promise((resolve) => { releaseProbe = resolve; });
   let finished;
   const finishedPromise = new Promise((resolve) => { finished = resolve; });
   global.fetch = async (urlStr, opts) => {
@@ -789,15 +792,25 @@ test("a slow-but-successful account read finishes in the background and ends the
     if (String(urlStr).includes("/tokentracker-account-heatmap")) {
       functionCalls += 1;
       return new Promise((resolve, reject) => {
-        const t = setTimeout(() => {
+        let settled = false;
+        const settleOk = () => {
+          if (settled) return;
+          settled = true;
           resolve({ ok: true, status: 200, json: async () => ({ weeks: [], cloud: true }) });
           setImmediate(finished);
-        }, 50);
-        opts?.signal?.addEventListener("abort", () => {
-          clearTimeout(t);
+        };
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
           const err = new Error("The operation was aborted.");
           err.name = "AbortError";
           reject(err);
+          finished(err);
+        };
+        opts?.signal?.addEventListener("abort", onAbort);
+        probeGate.then(() => {
+          if (opts?.signal?.aborted) onAbort();
+          else settleOk();
         });
       });
     }
@@ -812,7 +825,8 @@ test("a slow-but-successful account read finishes in the background and ends the
     const during = await call(handler, { endpoint: HEATMAP_ENDPOINT });
     assert.equal(during._headers["x-tokentracker-account-view"], "0");
 
-    await finishedPromise;
+    releaseProbe();
+    assert.ifError(await finishedPromise);
     await new Promise((resolve) => setTimeout(resolve, 5));
     const after = await call(handler, { endpoint: HEATMAP_ENDPOINT });
     assert.equal(after._headers["x-tokentracker-account-view"], "1",
