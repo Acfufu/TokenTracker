@@ -131,3 +131,81 @@ test("verified owner badge responses keep unearned badge visibility", async () =
   assert.deepEqual(await response.json(), { badges: [{ badge_id: "first-upload", earned: false }],
     badges_include_unearned: true });
 });
+
+function totalsClient({ snapshot = { total_tokens: '9000', estimated_cost_usd: '123.45' }, snapshotError = null } = {}) {
+  const requests = [];
+  return { requests, database: {
+    from(table) {
+      const filters = {};
+      let columns = '';
+      const chain = {
+        select(value) { columns = value; return chain; },
+        eq(key, value) { filters[key] = value; return chain; },
+        order() { return chain; }, limit() { return chain; }, is() { return chain; },
+        async maybeSingle() {
+          requests.push({ table, columns, filters });
+          if (columns === 'from_day, to_day') return { data: { from_day: '1970-01-01', to_day: '2026-10-28' } };
+          if (columns.startsWith('rank,')) return { data: snapshot && { rank: 2, ...snapshot }, error: snapshotError };
+          return { data: { user_id: userId } };
+        },
+        then(resolve, reject) { return Promise.resolve({ data: [{ id: userId }] }).then(resolve, reject); },
+      };
+      return chain;
+    },
+    async rpc(name, args) {
+      if (name === 'user_badges_full' || name === 'cloud_pro_badges') return { data: [] };
+      requests.push({ rpc: name, args });
+      return { data: [{ bucket: new Date().toISOString().slice(0, 10), source: 'grok', model: 'grok',
+        total_tokens: 100, input_tokens: 60, output_tokens: 40, total_cost_usd: 2 }] };
+    },
+  } };
+}
+
+test('all-time profile totals match the ranked snapshot while activity stays in the 365-day window', async () => {
+  const client = totalsClient();
+  const handler = await fixture('tokentracker-leaderboard-profile', client);
+  const res = await handler(new Request('https://backend.test/profile?period=total&user_id=' + userId));
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.totals.total_tokens, 9000);
+  assert.equal(data.totals.estimated_cost_usd, 123.45);
+  assert.equal(data.totals.source, 'leaderboard_snapshot');
+  assert.equal(data.user.rank, 2);
+  assert.equal(data.daily_trend.length, 365);
+  assert.equal(data.heatmap.length, 365);
+  assert.equal(data.daily_trend.reduce((n, row) => n + row.total_tokens, 0), 100);
+  assert.equal(data.by_provider[0].percent, 1);
+  assert.equal(data.totals.avg_per_day_usd, 2 / 365);
+  const snap = client.requests.find(row => row.columns?.startsWith('rank,'));
+  assert.equal(snap.filters.from_day, '1970-01-01');
+  assert.equal(snap.filters.to_day, '2026-10-28');
+  assert.ok(snap.columns.includes('total_tokens, estimated_cost_usd'));
+  const grouped = client.requests.find(row => row.rpc);
+  assert.ok(grouped.args.p_from > '2024-01-01', 'lifetime totals must not expand the grouped scan');
+});
+
+for (const period of ['week', 'month']) {
+  test(`${period} profile totals still use the caller's activity window`, async () => {
+    const handler = await fixture('tokentracker-leaderboard-profile', totalsClient());
+    const res = await handler(new Request(`https://backend.test/profile?period=${period}&user_id=${userId}`));
+    const data = await res.json();
+    assert.equal(data.totals.total_tokens, 100);
+    assert.equal(data.totals.estimated_cost_usd, 2);
+    assert.equal(data.totals.source, 'activity_window');
+  });
+}
+
+test('a missing lifetime snapshot does not relabel rolling usage as lifetime or zero', async () => {
+  const handler = await fixture('tokentracker-leaderboard-profile', totalsClient({ snapshot: null }));
+  const res = await handler(new Request(`https://backend.test/profile?period=total&user_id=${userId}`));
+  const data = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(data.totals.total_tokens, null);
+  assert.equal(data.totals.estimated_cost_usd, null);
+  assert.equal(data.daily_trend.reduce((n, row) => n + row.total_tokens, 0), 100);
+});
+
+test('a failed lifetime snapshot query returns a fixed error instead of successful partial totals', async () => {
+  const handler = await fixture('tokentracker-leaderboard-profile', totalsClient({ snapshotError: { message: privateDetail } }));
+  await fixedFailure(await handler(new Request(`https://backend.test/profile?period=total&user_id=${userId}`)), 'Failed to fetch profile');
+});

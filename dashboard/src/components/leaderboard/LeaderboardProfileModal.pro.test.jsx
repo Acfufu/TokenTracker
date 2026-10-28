@@ -2,7 +2,7 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { ProfileContent } from "./LeaderboardProfileModal.jsx";
+import { ProfileContent, ProfileSkeleton } from "./LeaderboardProfileModal.jsx";
 
 vi.mock("../../contexts/InsforgeAuthContext.jsx", () => ({ useInsforgeAuth: () => ({ signedIn: true, user: { id: "another-user" } }) }));
 vi.mock("../../ui/dashboard/components/LikeButton.jsx", () => ({ LikeButton: () => null }));
@@ -34,4 +34,39 @@ describe("Pro identity in shared public profile content", () => {
     expect(screen.queryByRole("img", { name: "TokenTracker Pro member" })).not.toBeInTheDocument();
     expect(container.querySelector(".leaderboard-pro-avatar")).toBeNull();
   });
+});
+
+describe("profile totals and activity windows", () => {
+  it.each(["modal", "page"])("identifies lifetime totals separately from activity in the %s profile", (variant) => {
+    render(<MemoryRouter><ProfileContent data={{ ...profile,
+      period: { kind: "total", from: "2025-10-29", to: "2026-10-28" },
+      totals: { source: "leaderboard_snapshot", total_tokens: 9000, estimated_cost_usd: 123.45, active_days: 2, avg_per_day_usd: 2 / 365 },
+    }} currency="USD" rate={1} variant={variant} /></MemoryRouter>);
+    expect(screen.getByText("Totals: all time. Active days, daily average and breakdowns: 2025-10-29 to 2026-10-28.")).toBeInTheDocument();
+    expect(screen.getByText("$123.45")).toBeInTheDocument();
+    expect(screen.getByTitle("Window cost divided by 365 calendar days, including days without usage.")).toHaveTextContent("Avg/Day");
+  });
+
+  it("does not display a missing lifetime snapshot as zero", () => {
+    const { container } = render(<MemoryRouter><ProfileContent data={{ ...profile,
+      period: { kind: "total", from: "2025-10-29", to: "2026-10-28" },
+      totals: { source: "leaderboard_snapshot", total_tokens: null, estimated_cost_usd: null },
+    }} currency="USD" rate={1} /></MemoryRouter>);
+    const totals = container.querySelector('.grid');
+    expect(totals.children[0]).toHaveTextContent('--');
+    expect(totals.children[1]).toHaveTextContent('--');
+  });
+
+  it("labels older edge responses as windowed data rather than lifetime totals", () => {
+    render(<MemoryRouter><ProfileContent data={{ ...profile,
+      period: { kind: "total", from: "2025-10-29", to: "2026-10-28" },
+    }} currency="USD" rate={1} /></MemoryRouter>);
+    expect(screen.getByText("Stats: 2025-10-29 to 2026-10-28.")).toBeInTheDocument();
+  });
+});
+
+
+it.each(["modal", "page"])("renders the %s loading skeleton without profile data", (variant) => {
+  const { container } = render(<ProfileSkeleton variant={variant} />);
+  expect(container.querySelector(".tt-shimmer-bar")).not.toBeNull();
 });

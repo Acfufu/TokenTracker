@@ -1092,5 +1092,8 @@
   "cloud.free.device_scope": "僅統計目前裝置的用量",
   "cloud.plan.includes_local": "包含全部免費本地功能",
   "cloud.plan.device_sync": "不限裝置數量，跨裝置彙整同步",
-  "cloud.plan.device_fair_use": "日常個人使用不限裝置數量，不按裝置收費；大量或異常裝置接入可能觸發同步保護。"
+  "cloud.plan.device_fair_use": "日常個人使用不限裝置數量，不按裝置收費；大量或異常裝置接入可能觸發同步保護。",
+  "leaderboard.profile_modal.window.lifetime": "總額為全歷史；活躍天數、日均及用量分布為 {{from}} 至 {{to}}。",
+  "leaderboard.profile_modal.window.period": "統計範圍為 {{from}} 至 {{to}}。",
+  "leaderboard.profile_modal.window.average": "該視窗花費除以 {{days}} 個日曆日，包含無使用量的日期。"
 }

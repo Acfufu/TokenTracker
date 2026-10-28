@@ -2141,3 +2141,6 @@ settings.local_data.error.too_many_devices,settings,SettingsPage,LocalDataSectio
 settings.local_data.error.unknown_device,settings,SettingsPage,LocalDataSection,unknown_device,This imported source is no longer available.,,active
 settings.local_data.error.transfer_failed,settings,SettingsPage,LocalDataSection,transfer_failed,"Transfer failed. Check the file and local app, then try again.",,active
 settings.local_data.local_history_only,dashboard,DashboardPage,LocalDataSection,local_history_only,"Offline snapshots omit session records. Select this device for context breakdown; project, session and outcome analyses always use this device's records.",,active
+leaderboard.profile_modal.window.lifetime,dashboard,LeaderboardProfileModal,StatCards,lifetime,"Totals: all time. Active days, daily average and breakdowns: {{from}} to {{to}}.",,active
+leaderboard.profile_modal.window.period,dashboard,LeaderboardProfileModal,StatCards,period,Stats: {{from}} to {{to}}.,,active
+leaderboard.profile_modal.window.average,dashboard,LeaderboardProfileModal,StatCards,average,"Window cost divided by {{days}} calendar days, including days without usage.",,active

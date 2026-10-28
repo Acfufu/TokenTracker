@@ -922,20 +922,21 @@ export default async function (req: Request): Promise<Response> {
   if (period === "total") {
     // total snapshots are keyed (1970-01-01, <refresh day>) — mirror the
     // reader (tokentracker-leaderboard.ts) and resolve the latest pair.
-    const { data: latestTotal } = await client.database
+    const { data: latestTotal, error: latestTotalError } = await client.database
       .from("tokentracker_leaderboard_snapshots")
       .select("from_day, to_day")
       .eq("period", "total")
       .order("to_day", { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (latestTotalError) return json({ error: "Failed to fetch profile" }, 500);
     const lt = latestTotal as { from_day?: string; to_day?: string } | null;
     snapFromDay = (lt?.from_day ?? "1970-01-01").slice(0, 10);
     snapToDay = (lt?.to_day ?? new Date().toISOString()).slice(0, 10);
   }
-  const { data: snapRow } = await client.database
+  const { data: snapRow, error: snapshotError } = await client.database
     .from("tokentracker_leaderboard_snapshots")
-    .select("rank, display_name, avatar_url, generated_at")
+    .select("rank, display_name, avatar_url, generated_at, total_tokens, estimated_cost_usd")
     .eq("user_id", userId)
     .eq("period", period)
     .eq("from_day", snapFromDay)
@@ -943,7 +944,8 @@ export default async function (req: Request): Promise<Response> {
     .order("generated_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  const snap = (snapRow || null) as { rank?: number | null; display_name?: string | null; avatar_url?: string | null; generated_at?: string | null } | null;
+  if (snapshotError) return json({ error: "Failed to fetch profile" }, 500);
+  const snap = (snapRow || null) as { total_tokens?: number | string | null; estimated_cost_usd?: number | string | null; rank?: number | null; display_name?: string | null; avatar_url?: string | null; generated_at?: string | null } | null;
 
   // Heatmap window: trailing 365 days (always).
   const heatmapEndDay = addCalendarDays(todayDay, 1);
@@ -1117,8 +1119,11 @@ export default async function (req: Request): Promise<Response> {
       generated_at: snap?.generated_at || new Date().toISOString(),
     },
     totals: {
-      total_tokens: periodTotalTokens,
-      estimated_cost_usd: periodTotalCost,
+      // Only the two headline totals use the ranked lifetime snapshot. Activity,
+      // daily averages and breakdowns remain bounded by the returned period.
+      source: period === "total" ? "leaderboard_snapshot" : "activity_window",
+      total_tokens: period === "total" ? (snap?.total_tokens == null ? null : Number(snap.total_tokens)) : periodTotalTokens,
+      estimated_cost_usd: period === "total" ? (snap?.estimated_cost_usd == null ? null : Number(snap.estimated_cost_usd)) : periodTotalCost,
       active_days: activeDays,
       avg_per_day_usd: avgPerDayUsd,
     },

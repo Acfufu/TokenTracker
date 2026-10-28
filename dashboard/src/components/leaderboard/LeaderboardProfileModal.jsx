@@ -208,7 +208,7 @@ function SectionLabel({ children }) {
 }
 
 /** Stat number stacked over caption label. */
-function Stat({ value, label, title }) {
+function Stat({ value, label, title, labelTitle }) {
   return (
     <div>
       <div
@@ -221,7 +221,7 @@ function Stat({ value, label, title }) {
       >
         {value}
       </div>
-      <div className="mt-1.5 text-[11px] text-oai-gray-500 dark:text-oai-gray-400">{label}</div>
+      <div title={labelTitle} className="mt-1.5 text-[11px] text-oai-gray-500 dark:text-oai-gray-400">{label}</div>
     </div>
   );
 }
@@ -455,6 +455,10 @@ export function ProfileContent({ data, currency, rate, onClose, variant = "modal
     period,
   } = data;
   const isPage = variant === "page";
+  const lifetimeTotals = totals?.source === "leaderboard_snapshot";
+  const windowDays = period?.from && period?.to
+    ? Math.round((Date.parse(period.to) - Date.parse(period.from)) / 86400000) + 1
+    : null;
   const heatmapData = useMemo(() => buildHeatmapForModal(heatmap), [heatmap]);
   const favoriteName = models?.favorite?.model_name;
   const modelCount = Number(models?.count) || 0;
@@ -485,12 +489,12 @@ export function ProfileContent({ data, currency, rate, onClose, variant = "modal
         {/* Stat strip — flat row, no nested cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-4">
           <Stat
-            value={formatTokens(totals?.total_tokens)}
+            value={totals?.total_tokens == null ? copy("shared.placeholder.short") : formatTokens(totals.total_tokens)}
             title={formatTokensTooltip(totals?.total_tokens)}
             label={copy("leaderboard.profile_modal.stat.total_tokens")}
           />
           <Stat
-            value={formatCostCompact(totals?.estimated_cost_usd, currency, rate)}
+            value={totals?.estimated_cost_usd == null ? copy("shared.placeholder.short") : formatCostCompact(totals.estimated_cost_usd, currency, rate)}
             label={copy("leaderboard.profile_modal.stat.total_cost")}
           />
           <Stat
@@ -500,8 +504,17 @@ export function ProfileContent({ data, currency, rate, onClose, variant = "modal
           <Stat
             value={formatCostCompact(totals?.avg_per_day_usd, currency, rate)}
             label={copy("leaderboard.profile_modal.stat.avg_per_day")}
+            labelTitle={windowDays > 0 ? copy("leaderboard.profile_modal.window.average", { days: windowDays }) : undefined}
           />
         </div>
+
+        {period?.from && period?.to && (
+          <p className="text-[11px] text-oai-gray-500 dark:text-oai-gray-400">
+            {copy(lifetimeTotals ? "leaderboard.profile_modal.window.lifetime" : "leaderboard.profile_modal.window.period", {
+              from: period.from, to: period.to,
+            })}
+          </p>
+        )}
 
         {/* Fact list — streak, best day, top model. Three lines, no card. */}
         <dl className="space-y-2 border-t border-oai-gray-200/70 dark:border-oai-gray-800/60 pt-5">
