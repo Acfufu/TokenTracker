@@ -765,6 +765,67 @@ test("an account read that times out is tagged transient-timeout", async () => {
   }
 });
 
+test("a slow-but-successful account read finishes in the background and ends the backoff", async () => {
+  const queuePath = path.join(tmpHome, "queue.jsonl");
+  writeQueue(queuePath, [SAMPLE_ROW]);
+  seedSignedInTracker();
+
+  // The payload cache is keyed on the token's `sub`, as real InsForge tokens carry.
+  const accessJwt = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(
+    JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, sub: "user-1" }),
+  ).toString("base64url")}.sig`;
+  const prevTimeout = process.env.TOKENTRACKER_HTTP_TIMEOUT_MS;
+  // Callers wait 20 ms; the background read may run up to 5x that (100 ms).
+  process.env.TOKENTRACKER_HTTP_TIMEOUT_MS = "20";
+
+  const realFetch = global.fetch;
+  let functionCalls = 0;
+  let finished;
+  const finishedPromise = new Promise((resolve) => { finished = resolve; });
+  global.fetch = async (urlStr, opts) => {
+    if (String(urlStr).includes("/api/auth/refresh")) {
+      return { ok: true, status: 200, json: async () => ({ accessToken: accessJwt }) };
+    }
+    if (String(urlStr).includes("/tokentracker-account-heatmap")) {
+      functionCalls += 1;
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => {
+          resolve({ ok: true, status: 200, json: async () => ({ weeks: [], cloud: true }) });
+          setImmediate(finished);
+        }, 50);
+        opts?.signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          const err = new Error("The operation was aborted.");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    }
+    throw new Error(`unexpected fetch ${urlStr}`);
+  };
+  try {
+    const handler = freshHandler(queuePath);
+    const first = await call(handler, { endpoint: HEATMAP_ENDPOINT });
+    assert.equal(first._headers["x-tokentracker-account-view"], "0");
+    assert.equal(first._headers["x-tokentracker-account-fallback"], "transient-timeout");
+
+    const during = await call(handler, { endpoint: HEATMAP_ENDPOINT });
+    assert.equal(during._headers["x-tokentracker-account-view"], "0");
+
+    await finishedPromise;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const after = await call(handler, { endpoint: HEATMAP_ENDPOINT });
+    assert.equal(after._headers["x-tokentracker-account-view"], "1",
+      "the background completion must clear the backoff and fill the payload cache");
+    assert.equal(after.json().cloud, true);
+    assert.equal(functionCalls, 1, "the follow-up read is served from the payload cache");
+  } finally {
+    global.fetch = realFetch;
+    if (prevTimeout === undefined) delete process.env.TOKENTRACKER_HTTP_TIMEOUT_MS;
+    else process.env.TOKENTRACKER_HTTP_TIMEOUT_MS = prevTimeout;
+  }
+});
+
 test("a rejected token refresh is tagged transient-auth, not signed-out", async () => {
   const queuePath = path.join(tmpHome, "queue.jsonl");
   writeQueue(queuePath, [SAMPLE_ROW]);

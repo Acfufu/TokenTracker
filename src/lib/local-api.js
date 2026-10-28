@@ -27,6 +27,10 @@ const SYNC_TIMEOUT_MS = 120_000;
 // request still falls back normally; subsequent fan-out requests reuse that
 // decision for a short cooldown and return local data immediately.
 const ACCOUNT_VIEW_FAILURE_BACKOFF_MS = 2 * 60_000;
+// A caller stops waiting for the cloud after the response timeout, but the
+// read keeps going in the background for this many times as long so a slow
+// edge can still fill the payload cache and end the backoff early.
+const ACCOUNT_VIEW_BACKGROUND_TIMEOUT_FACTOR = 5;
 const TRACKER_BIN = path.resolve(__dirname, "../../bin/tracker.js");
 const MAX_DEVICE_NAME_LENGTH = 128;
 
@@ -1495,6 +1499,7 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
   // otherwise a fallback reason (see above) telling the caller — and, through
   // the `X-TokenTracker-Account-Fallback` header, the popover — why the local
   // single-machine data is being served instead.
+  const ACCOUNT_VIEW_STILL_PENDING = Symbol("account-view-still-pending");
   async function tryServeAccountView(usageSlug, url, res) {
     if (!getCloudSyncPref()) return ACCOUNT_FALLBACK_CLOUD_SYNC_OFF;
     const refreshToken = getRefreshTokenForCloud();
@@ -1514,7 +1519,15 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
     const envTimeout = process.env.TOKENTRACKER_HTTP_TIMEOUT_MS
       ? parseInt(process.env.TOKENTRACKER_HTTP_TIMEOUT_MS, 10)
       : 0;
-    const timeoutMs = envTimeout > 0 ? envTimeout : 4000;
+    // `responseTimeoutMs` bounds how long THIS caller waits before it gets the
+    // local fallback. The cloud read itself keeps running in the background
+    // for up to ACCOUNT_VIEW_BACKGROUND_TIMEOUT_FACTOR times that: full-history
+    // aggregates from far regions often take 2-6 s, and the first read after a
+    // backoff window meets an edge that went cold during it. A late success
+    // still fills the payload cache and clears the backoff, so the next poll is
+    // served instead of timing out again.
+    const responseTimeoutMs = envTimeout > 0 ? envTimeout : 4000;
+    const requestTimeoutMs = responseTimeoutMs * ACCOUNT_VIEW_BACKGROUND_TIMEOUT_FACTOR;
     try {
       // An identical overlapping read shares the entire probe, including its
       // token mint. A healthy pending read must not look like a cloud outage
@@ -1527,7 +1540,7 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
           baseUrl: runtime.baseUrl || DEFAULT_BASE_URL,
           anonKey: runtime.anonKey,
           refreshToken,
-          timeoutMs,
+          timeoutMs: requestTimeoutMs,
           onSessionRefreshed: (session) => {
             getRuntime();
             if (sessionAtStart !== getCloudAccountSessionGeneration()) {
@@ -1542,8 +1555,32 @@ function createLocalApiHandler({ queuePath, serverVersion = null, trackerDataDir
           if (accountViewInFlight.get(requestKey) === pending) accountViewInFlight.delete(requestKey);
         };
         pending.then(cleanup, cleanup);
+        // Settle the backoff from the probe itself, so it also counts when
+        // every caller has already stopped waiting.
+        pending.then(
+          (out) => { if (out && out.data != null) accountViewFailures.delete(failureKey); },
+          (e) => { if (e?.code !== "auth_session_changed") rememberAccountViewFailure(failureKey); },
+        );
       }
-      const out = await pending;
+      let responseTimer;
+      const responseDeadline = new Promise((resolve) => {
+        responseTimer = setTimeout(() => resolve(ACCOUNT_VIEW_STILL_PENDING), responseTimeoutMs);
+        if (typeof responseTimer.unref === "function") responseTimer.unref();
+      });
+      let out;
+      try {
+        out = await Promise.race([pending, responseDeadline]);
+      } finally {
+        clearTimeout(responseTimer);
+      }
+      if (out === ACCOUNT_VIEW_STILL_PENDING) {
+        // Back the fan-out off as before; the probe clears this on success.
+        rememberAccountViewFailure(failureKey);
+        if (getRuntime().debug) {
+          console.warn(`[LocalAPI] account view still pending after ${responseTimeoutMs}ms for ${usageSlug}; continuing in background`);
+        }
+        return "transient-timeout";
+      }
       getRuntime();
       // `null` here means the slug has no cloud equivalent, or the session
       // vanished mid-request — a routing/session fact, not an outage.
