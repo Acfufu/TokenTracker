@@ -335,6 +335,21 @@ const ZCODE_INCLUSIVE_TOKEN_REPAIR_KEY = "zcodeInclusiveTokenRepair_2026_09";
 // lower, and the wipe helpers below now preserve hours older than the live
 // rebuild floor so a future re-key cannot repeat the loss.
 const ZCODE_PRUNE_WINDOW_RESTORE_KEY = "zcodePruneWindowRestore_2026_10";
+// One-time reconcile (#828 follow-up): ZCode prunes model_usage to ~30 days and
+// session deletes cascade at any age, so the live DB alone can no longer prove
+// every bucket. When the user points TOKENTRACKER_ZCODE_USAGE_ARCHIVE at a
+// local archive DB (rows captured before pruning), union live+archive by row
+// id and raise any zcode bucket (and its last-wins queue row) that the sources
+// prove higher. Raise-only: a bucket backed by rows the sources lost (deleted
+// young) is never touched. Opt-in env — users without an archive are a no-op.
+const ZCODE_ARCHIVE_RECONCILE_KEY = "zcodeArchiveReconcile_2026_10";
+// Companion to the reconcile above: a concurrent older-build sync observed
+// mid-reconcile state once and re-emitted pre-reconcile queue values on top of
+// the raised buckets (exact double). Detect that signature per key — current
+// equals reconciled-correct plus the pre-reconcile queue value, integer-exact —
+// and snap both the bucket and the queue last-wins back. Everything else is
+// untouched, so ordinary growth never falls inside the guard.
+const ZCODE_RECONCILE_DOUBLING_KEY = "zcodeArchiveReconcileDoubling_2026_10_v2";
 const AUTO_SYNC_SOURCE_ALIASES = new Map([
   ["code", "every-code"],
   ["commandcode", "command-code"],
@@ -1820,6 +1835,26 @@ async function cmdSync(argv, context = {}) {
             queueStatePath,
             dbPaths: zcodeDbPaths,
           });
+          if (await repairZcodeArchiveReconcile({
+            cursors,
+            queuePath,
+            queueStatePath,
+            dbPaths: zcodeDbPaths,
+            throttlePath: uploadThrottlePath,
+          })) {
+            cursorStore.requiresCommit = true;
+          }
+          if (await repairZcodeReconcileDoubling({
+            cursors,
+            queuePath,
+            queueStatePath,
+            dbPaths: zcodeDbPaths,
+            archivePath: process.env.TOKENTRACKER_ZCODE_USAGE_ARCHIVE || "",
+            throttlePath: uploadThrottlePath,
+            rebuildFloorMs: zcodeRebuildFloorMs,
+          })) {
+            cursorStore.requiresCommit = true;
+          }
           zcodeResult = await multiInstallParse({
             paths: zcodePaths, parserFn: parseOpencodeDbForInstall, providerName: "zcode",
             cursors, getParams: (p) => ({ dbPath: p, readFn: readZcodeDbMessages, source: "zcode", cursorKey: "zcode" }),
@@ -3958,8 +3993,13 @@ module.exports = {
   repairZcodeNativeUsageMigration,
   repairZcodeInclusiveTokenMigration,
   repairZcodePruneWindowRestore,
+  repairZcodeArchiveReconcile,
+  repairZcodeReconcileDoubling,
+  collectZcodeArchiveUsageUnion,
   resolveZcodeRebuildFloorMs,
   ZCODE_PRUNE_WINDOW_RESTORE_KEY,
+  ZCODE_ARCHIVE_RECONCILE_KEY,
+  ZCODE_RECONCILE_DOUBLING_KEY,
   reincludeClaudeMemObserverFiles,
   repairGrokQueueFromSessionSnapshots,
   applyCloudConversationsBackfill,
@@ -5557,6 +5597,410 @@ async function repairZcodePruneWindowRestore({
     backupsConsidered: backupPaths.length,
   };
   return true;
+}
+
+// Union completed model_usage rows across the live installs and the archive DB,
+// deduped by row id with the LIVE copy winning (an archived twin must never
+// out-vote a row ZCode may have corrected in place). Rows qualify as "already
+// counted" when the parser's `sessionID|messageID` index contains them, or
+// when they are older than `stableBeforeMs` — the parser re-reads the whole DB
+// every sync, so a row that has stayed live (or archived) past that horizon is
+// settled history, not pending work; fresh rows stay the parser's job.
+// Aggregated per (model, half-hour) with the parser's inclusive→disjoint
+// mapping (total = input + output, verified exact against TT on 1,088 buckets).
+async function collectZcodeArchiveUsageUnion({
+  dbPaths,
+  archivePath,
+  countedKeys = null,
+  stableBeforeMs = null,
+}) {
+  const columns = `id, session_id, model_id, started_at,
+    input_tokens, output_tokens, reasoning_tokens,
+    cache_creation_input_tokens, cache_read_input_tokens`;
+  const filter = `status = 'completed'
+    AND trim(model_id) != ''
+    AND (input_tokens > 0 OR output_tokens > 0 OR reasoning_tokens > 0
+      OR cache_creation_input_tokens > 0 OR cache_read_input_tokens > 0)`;
+  const byId = new Map();
+  let read = 0;
+  const readDb = async (dbPath, sqliteOptions) => {
+    const rows = readSqliteJsonRows(
+      dbPath,
+      `SELECT ${columns} FROM model_usage WHERE ${filter}`,
+      { label: "ZCode", maxBuffer: 128 * 1024 * 1024, readOnly: true, ...sqliteOptions },
+    );
+    for (const row of Array.isArray(rows) ? rows : []) {
+      read += 1;
+      const id = String(row?.id ?? "").trim();
+      if (!id || byId.has(id)) continue;
+      if (countedKeys) {
+        const session = String(row?.session_id ?? "").trim();
+        const startedMs = coerceEpochMs(row?.started_at);
+        const settled = stableBeforeMs != null && startedMs > 0 && startedMs < stableBeforeMs;
+        if (!settled && !countedKeys.has(`${session}|${id}`)) continue;
+      }
+      byId.set(id, row);
+    }
+  };
+  for (const dbPath of dbPaths) {
+    await readDb(dbPath, { timeout: 10_000 });
+  }
+  if (archivePath) {
+    await readDb(archivePath, { timeout: 30_000 });
+  }
+  // Model names are trim-only and case-preserving (normalizeModelInput
+  // semantics): folding case here would mint keys that split from the
+  // parser-emitted bucket keys and double-count on the dashboard.
+  const byKey = new Map();
+  for (const row of byId.values()) {
+    const model = String(row?.model_id ?? "").trim() || "unknown";
+    const startedMs = coerceEpochMs(row?.started_at);
+    const hourStart = toUtcHalfHourStart(startedMs);
+    if (!hourStart || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(hourStart)) continue;
+    const rawInput = Number(row?.input_tokens) || 0;
+    const rawOutput = Number(row?.output_tokens) || 0;
+    const cacheRead = Number(row?.cache_read_input_tokens) || 0;
+    const cacheWrite = Number(row?.cache_creation_input_tokens) || 0;
+    const reasoning = Number(row?.reasoning_tokens) || 0;
+    const key = bucketKey("zcode", model, hourStart);
+    const totals = byKey.get(key) || {
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      total_tokens: 0,
+      conversation_count: 0,
+    };
+    totals.input_tokens += Math.max(0, rawInput - cacheRead - cacheWrite);
+    totals.cached_input_tokens += cacheRead;
+    totals.cache_creation_input_tokens += cacheWrite;
+    totals.output_tokens += Math.max(0, rawOutput - reasoning);
+    totals.reasoning_output_tokens += reasoning;
+    totals.total_tokens += rawInput + rawOutput;
+    byKey.set(key, totals);
+  }
+  return { byKey, rowCount: byId.size, read };
+}
+
+// One-shot env-gated reconcile: raise zcode buckets (and queue last-wins rows)
+// toward max(current bucket, queue last-wins, live∪archive source). Never
+// lowers — buckets backed by source rows that were deleted young stay as-is.
+async function repairZcodeArchiveReconcile({
+  cursors,
+  queuePath,
+  queueStatePath,
+  dbPaths = [],
+  archivePath = process.env.TOKENTRACKER_ZCODE_USAGE_ARCHIVE || "",
+  throttlePath = "",
+  minSourceRows = 1000,
+} = {}) {
+  if (!cursors || typeof cursors !== "object") return false;
+  const migrations = (cursors.migrations ||= {});
+  const prior = migrations[ZCODE_ARCHIVE_RECONCILE_KEY];
+  if (isCompletedZcodeMigration(prior)) return false;
+
+  const archive = typeof archivePath === "string" ? archivePath.trim() : "";
+  if (!archive) {
+    migrations[ZCODE_ARCHIVE_RECONCILE_KEY] = {
+      skipped: true,
+      reason: "zcode_archive_env_not_set",
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+  if (!fssync.existsSync(archive)) {
+    migrations[ZCODE_ARCHIVE_RECONCILE_KEY] = {
+      skipped: true,
+      reason: "zcode_archive_missing",
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+
+  let sources;
+  try {
+    // The parser's own dedup index — only rows it has already counted may
+    // drive a raise. Rows beyond the cursor belong to the parser.
+    const countedKeys = new Set();
+    const zcodeCursor = cursors.zcode;
+    for (const index of [
+      zcodeCursor?.messages,
+      zcodeCursor?.native?.messages,
+      zcodeCursor?.wsl?.messages,
+    ]) {
+      if (index && typeof index === "object") {
+        for (const messageKey of Object.keys(index)) countedKeys.add(messageKey);
+      }
+    }
+    sources = await collectZcodeArchiveUsageUnion({
+      dbPaths,
+      archivePath,
+      countedKeys,
+      // Rows older than 48h are settled history (the parser re-reads the full
+      // DB every sync); archive-only rows whose cursor keys were lost in the
+      // September wipe repairs count through this horizon, not the index.
+      stableBeforeMs: Date.now() - 48 * 60 * 60 * 1000,
+    });
+  } catch (error) {
+    migrations[ZCODE_ARCHIVE_RECONCILE_KEY] = {
+      skipped: true,
+      reason: "zcode_source_read_failed",
+      detail: String(error?.message || error),
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+  // Degenerate/partial source read tripwire: applying against a truncated
+  // union would strand the raise one-shot short of the real maxima.
+  if (sources.rowCount < minSourceRows) {
+    migrations[ZCODE_ARCHIVE_RECONCILE_KEY] = {
+      skipped: true,
+      reason: "zcode_source_too_small",
+      sourceRows: sources.rowCount,
+      minSourceRows,
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+
+  const liveLatest = await collectZcodeQueueLatest(queuePath, {});
+  const hourly = (cursors.hourly ||= { buckets: {}, groupQueued: {} });
+  hourly.buckets ||= {};
+
+  // collectZcodeQueueLatest keys are `${model}|${hour_start}` — re-prefix them
+  // so every key here is a full bucket key. Source aggregates participate only
+  // for buckets the parser has already emitted (queue row exists); hours it
+  // has never reached flow in through the normal parse, not through here.
+  const keys = new Set();
+  for (const key of sources.byKey.keys()) {
+    if (liveLatest.has(key.slice("zcode|".length))) keys.add(key);
+  }
+  for (const latestKey of liveLatest.keys()) keys.add(`zcode|${latestKey}`);
+  const appends = [];
+  let raised = 0;
+  let added = 0;
+  let tokensDelta = 0;
+  for (const key of keys) {
+    const curTotals = hourly.buckets[key]?.totals
+      ? zcodeRowTotals(hourly.buckets[key].totals)
+      : null;
+    const qRow = liveLatest.get(key.slice("zcode|".length));
+    const qTotals = qRow ? zcodeRowTotals(qRow.totals) : null;
+    const srcTotals = sources.byKey.get(key) || null;
+    // Strict > with cur → q → src tie preference: equal totals never rewrite.
+    let best = null;
+    for (const candidate of [curTotals, qTotals, srcTotals]) {
+      if (candidate && (!best || candidate.total_tokens > best.total_tokens)) best = candidate;
+    }
+    if (!best || (curTotals && best.total_tokens <= curTotals.total_tokens)) continue;
+
+    const parts = key.split("|");
+    const hourStart = parts.at(-1);
+    const model = parts.slice(1, -1).join("|");
+    const conversationCount = curTotals?.conversation_count
+      ?? qTotals?.conversation_count ?? 0;
+    const totals = { ...best, conversation_count: conversationCount };
+    hourly.buckets[key] = {
+      ...(hourly.buckets[key] || {}),
+      totals,
+      hour_start: hourStart,
+      source: "zcode",
+      model,
+    };
+    if (curTotals) raised += 1;
+    else added += 1;
+    tokensDelta += totals.total_tokens - (curTotals?.total_tokens || 0);
+    // Queue row only when the source strictly beats the last emission —
+    // reruns after a crash see q === src and never re-append.
+    if (srcTotals && srcTotals.total_tokens > 0
+      && (!qTotals || srcTotals.total_tokens > qTotals.total_tokens)) {
+      appends.push(JSON.stringify({ source: "zcode", model, hour_start: hourStart, ...totals }));
+    }
+  }
+
+  if (appends.length > 0) {
+    await backupExistingFile(queuePath);
+    await fs.appendFile(queuePath, `${appends.join("\n")}\n`, "utf8");
+    await resetUploadOffsetForZcodeRepair(
+      queueStatePath,
+      "reset_after_zcode_archive_reconcile_2026_10",
+    );
+    if (throttlePath) {
+      try {
+        await fs.unlink(throttlePath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+
+  migrations[ZCODE_ARCHIVE_RECONCILE_KEY] = {
+    appliedAt: new Date().toISOString(),
+    sourceRows: sources.rowCount,
+    bucketsRaised: raised,
+    bucketsAdded: added,
+    queueRowsAppended: appends.length,
+    tokensDelta,
+    scope: "main-only",
+  };
+  return raised + added > 0;
+}
+
+function zcodeBackupTimestamp(filePath) {
+  const match = /\.bak\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)$/.exec(filePath || "");
+  if (!match) return null;
+  const iso = match[1].replace(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/,
+    "$1T$2:$3:$4.$5Z",
+  );
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Snap a doubled reconcile back down. A key qualifies only when its current
+// totals minus a candidate correct value equals the pre-reconcile queue value
+// exactly, per column — ordinary growth cannot produce that signature.
+async function repairZcodeReconcileDoubling({
+  cursors,
+  queuePath,
+  queueStatePath,
+  dbPaths = [],
+  archivePath = process.env.TOKENTRACKER_ZCODE_USAGE_ARCHIVE || "",
+  throttlePath = "",
+  backupPath = null,
+  rebuildFloorMs = null,
+} = {}) {
+  if (!cursors || typeof cursors !== "object") return false;
+  const migrations = (cursors.migrations ||= {});
+  if (isCompletedZcodeMigration(migrations[ZCODE_RECONCILE_DOUBLING_KEY])) return false;
+  if (!isCompletedZcodeMigration(migrations[ZCODE_ARCHIVE_RECONCILE_KEY])) {
+    migrations[ZCODE_RECONCILE_DOUBLING_KEY] = {
+      skipped: true,
+      reason: "reconcile_not_applied",
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+
+  let bakPath = backupPath;
+  if (!bakPath) {
+    const appliedAtMs = Date.parse(migrations[ZCODE_ARCHIVE_RECONCILE_KEY].appliedAt || "") || null;
+    const backups = [];
+    for (const filePath of await listZcodeQueueBackupPaths(queuePath)) {
+      const ts = zcodeBackupTimestamp(filePath);
+      if (ts != null && (appliedAtMs == null || ts <= appliedAtMs)) backups.push({ filePath, ts });
+    }
+    bakPath = backups.sort((a, b) => a.ts - b.ts).at(-1)?.filePath || null;
+  }
+  if (!bakPath || !fssync.existsSync(bakPath)) {
+    migrations[ZCODE_RECONCILE_DOUBLING_KEY] = {
+      skipped: true,
+      reason: "reconcile_backup_missing",
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+
+  let srcByKey = new Map();
+  try {
+    const sources = await collectZcodeArchiveUsageUnion({
+      dbPaths,
+      archivePath: fssync.existsSync(archivePath) ? archivePath : null,
+      countedKeys: null,
+      stableBeforeMs: Date.now() - 48 * 60 * 60 * 1000,
+    });
+    srcByKey = sources.byKey;
+  } catch (_error) {
+    // Source union is optional: the plain-bak doubling signature still applies.
+  }
+
+  const bakLatest = await collectZcodeQueueLatest(bakPath, {});
+  const liveLatest = await collectZcodeQueueLatest(queuePath, {});
+  const hourly = cursors.hourly && typeof cursors.hourly === "object" ? cursors.hourly : null;
+  const buckets = hourly?.buckets;
+  const columns = [
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_creation_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+    "conversation_count",
+  ];
+  const appends = [];
+  let fixed = 0;
+  let tokensDelta = 0;
+  for (const [latestKey, qRow] of liveLatest) {
+    const key = `zcode|${latestKey}`;
+    const bucket = buckets?.[key];
+    const bakRow = bakLatest.get(latestKey);
+    if (!bucket?.totals || !bakRow) continue;
+    const curTotals = zcodeRowTotals(bucket.totals);
+    const bakTotals = zcodeRowTotals(bakRow.totals);
+    if (!(curTotals.total_tokens > 0) || !(bakTotals.total_tokens > 0)) continue;
+    const srcTotals = srcByKey.get(key) || null;
+    const hourMs = zcodeHourStartMs(latestKey.slice(latestKey.lastIndexOf("|") + 1));
+    // Settled hours (older than the live rebuild floor) hold rows the live DB
+    // has already pruned: their buckets can never legitimately grow again, so
+    // any excess over max(archive source, pre-reconcile queue) is doubling
+    // residue and snaps back unconditionally. Newer hours need the exact
+    // integer signature — current minus a candidate correct value equals the
+    // pre-reconcile queue value — so ordinary growth is never touched.
+    const pruned = rebuildFloorMs != null && hourMs != null && hourMs < rebuildFloorMs;
+    let expectedTotals = null;
+    if (pruned) {
+      expectedTotals = (srcTotals?.total_tokens || 0) >= bakTotals.total_tokens ? srcTotals : bakTotals;
+    } else {
+      const doubledBy = (correctTotal) => correctTotal != null && correctTotal > 0
+        && curTotals.total_tokens - correctTotal === bakTotals.total_tokens;
+      if (doubledBy(srcTotals?.total_tokens ?? null)) expectedTotals = srcTotals;
+      else if (doubledBy(bakTotals.total_tokens)) expectedTotals = bakTotals;
+    }
+    if (!expectedTotals) continue;
+    const expectedTotalTokens = expectedTotals.total_tokens || 0;
+    if (!(curTotals.total_tokens > expectedTotalTokens)) continue;
+    const corrected = zcodeRowTotals({
+      ...zcodeRowTotals(expectedTotals),
+      // conversation_count may not have doubled with the tokens (an emit can
+      // carry the original count) — prefer the pre-reconcile count.
+      conversation_count: bakTotals.conversation_count || curTotals.conversation_count || 0,
+    });
+    buckets[key] = { ...bucket, totals: corrected };
+    fixed += 1;
+    tokensDelta -= curTotals.total_tokens - expectedTotalTokens;
+    appends.push(JSON.stringify({
+      source: "zcode",
+      model: qRow.model,
+      hour_start: qRow.hour_start,
+      ...corrected,
+    }));
+  }
+
+  if (appends.length > 0) {
+    await backupExistingFile(queuePath);
+    await fs.appendFile(queuePath, `${appends.join("\n")}\n`, "utf8");
+    await resetUploadOffsetForZcodeRepair(
+      queueStatePath,
+      "reset_after_zcode_reconcile_doubling_2026_10",
+    );
+    if (throttlePath) {
+      try {
+        await fs.unlink(throttlePath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+
+  migrations[ZCODE_RECONCILE_DOUBLING_KEY] = {
+    appliedAt: new Date().toISOString(),
+    bucketsFixed: fixed,
+    queueRowsAppended: appends.length,
+    tokensDelta,
+    backupPath: bakPath,
+  };
+  return fixed > 0;
 }
 
 async function repairZcodeNativeUsageMigration(options = {}) {
