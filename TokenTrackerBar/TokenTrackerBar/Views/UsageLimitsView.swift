@@ -999,7 +999,6 @@ struct UsageLimitsView: View {
                         resetDate: spec.resetDate,
                         segments: spec.segments,
                         showSegments: false,
-                        productPool: spec.productPool,
                         creditsDetail: spec.creditsDetail
                     )
                 }
