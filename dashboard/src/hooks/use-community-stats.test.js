@@ -43,6 +43,7 @@ describe("useCommunityStats", () => {
         tokens30d: 2_000,
         tokenGrowthPct: null,
         developerGrowthPct: 12.5,
+        generatedAt: "2026-07-18T08:00:00.000Z",
       },
     }));
 
@@ -69,6 +70,12 @@ describe("useCommunityStats", () => {
         totalEntries: 55,
         top: [{ total_tokens: 1_200 }],
         topModels: [{ name: "claude-opus-4-8", tokens: 5_000, share: 71.4 }],
+        providers: [],
+        dailyGrowth: [],
+        tokenMix: [],
+        userDistribution: [],
+        platforms: [],
+        generatedAt: "2026-07-18T08:00:00.000Z",
       },
     }));
     vi.mocked(getLeaderboard).mockRejectedValue(new Error("temporary backend failure"));
@@ -93,6 +100,12 @@ describe("useCommunityStats", () => {
         totalEntries: 60,
         top: [{ total_tokens: 2_000 }],
         topModels: [{ name: "gpt-5.5", tokens: 7_000, share: 77.8 }],
+        providers: [],
+        dailyGrowth: [],
+        tokenMix: [],
+        userDistribution: [],
+        platforms: [],
+        generatedAt: "2026-07-18T08:00:00.000Z",
       },
     }));
     vi.mocked(getLeaderboard).mockResolvedValue({
@@ -154,7 +167,7 @@ describe("useCommunityStats", () => {
       .toMatchObject({ activeDevelopers30d: 5, tokens30d: 450 });
   });
 
-  it("falls back to the leaderboard sample floor when the aggregate total is unavailable", async () => {
+  it("does not mark a partial aggregate response as ready", async () => {
     vi.mocked(getLeaderboard).mockResolvedValue({
       total_entries: 2,
       entries: [
@@ -166,8 +179,8 @@ describe("useCommunityStats", () => {
 
     const { result } = renderHook(() => useCommunityStats());
 
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    expect(result.current.tokenFloor).toBe(150);
+    await waitFor(() => expect(result.current.status).toBe("error"));
+    expect(result.current.tokenFloor).toBeNull();
     expect(window.localStorage.getItem(COMMUNITY_STATS_STORAGE_KEY)).toBeNull();
   });
 });

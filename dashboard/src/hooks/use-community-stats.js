@@ -23,12 +23,30 @@ function withTimeout(promise, ms) {
 const CACHE_TTL_MS = 5 * 60_000;
 const PERSISTED_MAX_AGE_MS = 24 * 60 * 60_000;
 export const COMMUNITY_STATS_STORAGE_KEY = "tokentracker:community-stats:v2";
+const COMMUNITY_AGGREGATE_FIELDS = [
+  "topModels",
+  "providers",
+  "dailyGrowth",
+  "tokenMix",
+  "userDistribution",
+  "platforms",
+];
+const COMMUNITY_RESPONSE_FIELDS = [
+  "top_models",
+  "providers",
+  "daily_growth",
+  "token_mix",
+  "user_distribution",
+  "platforms",
+];
 let cachedFetch = null;
 
 function normalizeCachedData(value) {
   const tokenFloor = Number(value?.tokenFloor) || 0;
   const totalEntries = Number(value?.totalEntries) || 0;
-  if (!(tokenFloor > 0) || !(totalEntries > 0)) return null;
+  const hasAggregateFields = COMMUNITY_AGGREGATE_FIELDS.every((key) => Array.isArray(value?.[key]));
+  if (!(tokenFloor > 0) || !(totalEntries > 0) || !hasAggregateFields
+    || typeof value?.generatedAt !== "string" || !value.generatedAt) return null;
   return {
     tokenFloor,
     totalEntries,
@@ -138,25 +156,22 @@ export function useCommunityStats({ enabled = true } = {}) {
         const [data, modelsData] = await fetchCommunityData();
         if (cancelled) return;
         const entries = Array.isArray(data?.entries) ? data.entries : [];
-        const sampledTokenFloor = entries.reduce(
-          (sum, entry) => sum + (Number(entry?.total_tokens) || 0),
-          0,
-        );
         const communityTotalTokens = Number(modelsData?.total_tokens) || 0;
-        if (!(communityTotalTokens > 0)) {
-          // The leaderboard sum is only a lower-bound fallback. Do not let a
-          // successful lightweight request make a failed authoritative model
-          // request look fresh to the next consumer.
+        const hasAggregateData = communityTotalTokens > 0
+          && COMMUNITY_RESPONSE_FIELDS.every((key) => Array.isArray(modelsData?.[key]));
+        if (!entries.length || !hasAggregateData) {
           cachedFetch = null;
-        }
-        const cachedTokenFloor = Number(persistentCache?.data?.tokenFloor) || 0;
-        const tokenFloor = communityTotalTokens > 0
-          ? communityTotalTokens
-          : (cachedTokenFloor > 0 ? cachedTokenFloor : sampledTokenFloor);
-        if (!entries.length || !(tokenFloor > 0)) {
-          setState((prev) => ({ ...prev, status: "error" }));
+          setState((prev) => prev.status === "ready"
+            ? {
+                ...prev,
+                totalEntries: Number(data?.total_entries) || prev.totalEntries,
+                top: entries.slice(0, 3),
+              }
+            : { ...prev, status: "error" });
           return;
         }
+
+        const tokenFloor = communityTotalTokens;
 
         // Real model-level breakdown from the dedicated endpoint
         const topModels = Array.isArray(modelsData?.top_models)
@@ -192,9 +207,7 @@ export function useCommunityStats({ enabled = true } = {}) {
         // Do not make an old authoritative total look fresh when only the
         // lightweight leaderboard request recovered. Keeping the old storage
         // timestamp makes the next mount retry model revalidation.
-        if (communityTotalTokens > 0) {
-          writePersistentCache(readyData);
-        }
+        writePersistentCache(readyData);
       } catch (_e) {
         // Keep the last successful snapshot visible during transient backend
         // failures. Only first-time visitors with no cache fall back to copy.
