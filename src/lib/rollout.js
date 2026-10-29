@@ -3606,6 +3606,37 @@ async function enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets })
 
   const toAppend = [];
   for (const group of groupedBuckets.values()) {
+    // A local reconstruction may opt into observed-only attribution. Preserve
+    // every model bucket, including unknown, instead of guessing from the
+    // busiest model in the same half-hour. The policy lives in cursor state
+    // so hooks, desktop refreshes, and restarted CLI processes agree.
+    if (hourlyState.modelAttributionPolicy?.[group.source] === "observed") {
+      for (const [model, bucket] of group.buckets.entries()) {
+        const totals = bucket.totals;
+        const usagePrecision = bucket.usage_precision || null;
+        const key = usagePrecision ? `${totalsKey(totals)}|${usagePrecision}` : totalsKey(totals);
+        if (bucket.queuedKey === key) continue;
+        toAppend.push(JSON.stringify({
+          source: group.source,
+          model,
+          hour_start: group.hourStart,
+          input_tokens: totals.input_tokens,
+          cached_input_tokens: totals.cached_input_tokens,
+          cache_creation_input_tokens: totals.cache_creation_input_tokens,
+          output_tokens: totals.output_tokens,
+          reasoning_output_tokens: totals.reasoning_output_tokens,
+          total_tokens: totals.total_tokens,
+          billable_total_tokens: totals.billable_total_tokens ?? totals.total_tokens,
+          total_cost_usd: totals.total_cost_usd || 0,
+          usage_precision: usagePrecision || undefined,
+          ...prioritySubsetOf(totals),
+          conversation_count: totals.conversation_count,
+        }));
+        bucket.queuedKey = key;
+        bucket.alignedModel = null;
+      }
+      continue;
+    }
     const unknownBucket = group.buckets.get(DEFAULT_MODEL) || null;
     const dominantModel = pickDominantModel(group.buckets);
     let alignedModel = null;
@@ -3977,6 +4008,10 @@ function normalizeHourlyState(raw) {
   const rawBuckets = state.buckets && typeof state.buckets === "object" ? state.buckets : {};
   const buckets = {};
   const groupQueued = {};
+  const modelAttributionPolicy = Object.fromEntries(
+    Object.entries(state.modelAttributionPolicy || {})
+      .filter(([, policy]) => policy === "observed"),
+  );
 
   if (!Number.isFinite(version) || version < 2) {
     for (const [key, value] of Object.entries(rawBuckets)) {
@@ -3994,6 +4029,7 @@ function normalizeHourlyState(raw) {
       version: 3,
       buckets,
       groupQueued,
+      ...(Object.keys(modelAttributionPolicy).length > 0 ? { modelAttributionPolicy } : {}),
       updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : null,
     };
   }
@@ -4013,6 +4049,7 @@ function normalizeHourlyState(raw) {
     version: 3,
     buckets,
     groupQueued: version >= 3 ? existingGroupQueued : {},
+    ...(Object.keys(modelAttributionPolicy).length > 0 ? { modelAttributionPolicy } : {}),
     updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : null,
   };
 }

@@ -72,6 +72,18 @@ const CODEX_RESUME_INVALIDATED = "TOKENTRACKER_CODEX_RESUME_INVALIDATED";
 // input (including cache), not the accumulated session or day totals.
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
+// Session token summaries use the same fork-prefix and reset-sentinel rules
+// as rollout.js. Context/performance callers retain their existing event view.
+const LEDGER_FORK_REPLAY_GAP_MS = 500;
+function isLedgerResetSentinel(last, total) {
+  const components = usage => [usage?.input_tokens, usage?.cached_input_tokens,
+    usage?.cache_creation_input_tokens ?? usage?.cache_write_input_tokens,
+    usage?.output_tokens, usage?.reasoning_output_tokens]
+    .reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+  return Number(last?.total_tokens || 0) > 0 && Number(total?.total_tokens || 0) === 0
+    && components(last) === 0 && components(total) === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Timezone helpers
 // ---------------------------------------------------------------------------
@@ -461,7 +473,7 @@ function formatToolDisplayName(name) {
 // Usage normalization
 // ---------------------------------------------------------------------------
 
-function normalizeUsage(u) {
+function normalizeUsage(u, { preserveReportedTotal = false } = {}) {
   const out = {};
   for (const k of [
     "input_tokens",
@@ -477,7 +489,7 @@ function normalizeUsage(u) {
   // Codex reports input inclusive of cached_input_tokens; keep our schema
   // convention: non-cached input and cached input tracked separately.
   out.input_tokens = Math.max(0, out.input_tokens - out.cached_input_tokens);
-  out.total_tokens =
+  if (!preserveReportedTotal) out.total_tokens =
     out.input_tokens +
     out.cached_input_tokens +
     out.cache_creation_input_tokens +
@@ -596,6 +608,7 @@ async function parseCodexRolloutFile(filePath, {
   sourceHandle = null,
   collectBreakdowns = true,
   collectModelUsage = false,
+  ledgerUsage = false,
   onObject = null,
   onUsage = null,
 } = {}) {
@@ -638,6 +651,10 @@ async function parseCodexRolloutFile(filePath, {
   let provider = isResuming ? resumeState.provider || null : null;
   let cliVersion = isResuming ? resumeState.cliVersion || null : null;
   let forkedFromId = isResuming ? resumeState.forkedFromId || null : null;
+  const ledgerRolloutDate = path.basename(primaryFilePath).match(/^rollout-(\d{4}-\d{2}-\d{2})T/)?.[1] || null;
+  let ledgerCurrentDate = isResuming ? resumeState.ledgerReplayState?.currentDate || null : null;
+  let ledgerReplayActive = isResuming ? Boolean(resumeState.ledgerReplayState?.active) : initialOffset === 0;
+  let ledgerPreviousTokenMs = isResuming ? resumeState.ledgerReplayState?.previousTokenMs ?? null : null;
   let parentThreadId = isResuming ? resumeState.parentThreadId || null : null;
   let threadSource = isResuming ? resumeState.threadSource || null : null;
   let agentNickname = isResuming ? resumeState.agentNickname || null : null;
@@ -1050,6 +1067,9 @@ async function parseCodexRolloutFile(filePath, {
     contentHasher,
     sourceHandle,
   })) {
+    if (ledgerUsage && obj?.type === "turn_context" && typeof obj?.payload?.current_date === "string") {
+      ledgerCurrentDate = obj.payload.current_date.trim().match(/^(\d{4}-\d{2}-\d{2})/)?.[1] || null;
+    }
     const modelEvent = applyCodexModelEvent(modelAttributionState, obj);
     const attributedModel = currentCodexModel(modelAttributionState);
     model = attributedModel || model;
@@ -1114,7 +1134,7 @@ async function parseCodexRolloutFile(filePath, {
     }
 
     if (usageRecord) {
-      const delta = normalizeUsage(usageRecord.usage);
+      const delta = normalizeUsage(usageRecord.usage, { preserveReportedTotal: ledgerUsage });
       noteUsageRecord(
         usageRecordState,
         // Without a response_id a compaction cannot be deduplicated.
@@ -1147,15 +1167,36 @@ async function parseCodexRolloutFile(filePath, {
         );
       }
       const rawDelta = consumeUsageDelta(usageDeltaState, lastUsage, totalUsage);
-      const delta = rawDelta ? normalizeUsage(rawDelta) : null;
+      const delta = rawDelta && !(ledgerUsage && isLedgerResetSentinel(lastUsage, totalUsage))
+        ? normalizeUsage(rawDelta, { preserveReportedTotal: ledgerUsage }) : null;
       // Timing consumers receive canonical, deduplicated usage below. A null
       // delta is a snapshot, not another model response.
       if (compaction) countCompactionRecord(compaction);
       const isNewResumeEvent = noteTokenEvent(ts, lastUsage, totalUsage);
       if (inRequestedRange) {
         const eventSessionId = sessionId || rolloutSessionIdFromPath(primaryFilePath) || primaryFilePath;
-        const eventKey = `${eventSessionId}:${ts}:${usageEventSignature(lastUsage, totalUsage)}`;
-        if (!isNewResumeEvent || (seenTokenEvents && seenTokenEvents.has(eventKey))) {
+        const eventKey = ledgerUsage ? `${eventSessionId}:${ts}`
+          : `${eventSessionId}:${ts}:${usageEventSignature(lastUsage, totalUsage)}`;
+        const alreadySeen = seenTokenEvents && seenTokenEvents.has(eventKey);
+        let replayed = false;
+        if (ledgerUsage && forkedFromId && delta?.total_tokens > 0) {
+          if (ledgerReplayActive) {
+            const tokenMs = Date.parse(ts);
+            if (!Number.isFinite(tokenMs) || (ledgerPreviousTokenMs !== null && tokenMs < ledgerPreviousTokenMs)) {
+              ledgerReplayActive = false;
+            } else {
+              if (ledgerPreviousTokenMs !== null && tokenMs - ledgerPreviousTokenMs >= LEDGER_FORK_REPLAY_GAP_MS) ledgerReplayActive = false;
+              replayed = ledgerReplayActive && ledgerPreviousTokenMs !== null
+                && tokenMs - ledgerPreviousTokenMs < LEDGER_FORK_REPLAY_GAP_MS;
+              ledgerPreviousTokenMs = tokenMs;
+            }
+          }
+          replayed ||= Boolean(ledgerRolloutDate && ledgerCurrentDate && ledgerCurrentDate < ledgerRolloutDate);
+        }
+        // Remember skipped inherited rows too: another readable copy of the
+        // same session must not reintroduce its prefix after the first live turn.
+        if (ledgerUsage && seenTokenEvents && delta?.total_tokens > 0) seenTokenEvents.add(eventKey);
+        if (!isNewResumeEvent || alreadySeen || replayed) {
           if (typeof onUsage === "function") onUsage({ timestamp: ts, delta: null, rawUsage: lastUsage, model: attributedModel });
           attributeTurn(null);
         } else {
@@ -1213,6 +1254,7 @@ async function parseCodexRolloutFile(filePath, {
       provider,
       cliVersion,
       forkedFromId,
+      ...(ledgerUsage ? { ledgerReplayState: { currentDate: ledgerCurrentDate, active: ledgerReplayActive, previousTokenMs: ledgerPreviousTokenMs } } : {}),
       parentThreadId,
       threadSource,
       agentNickname,
