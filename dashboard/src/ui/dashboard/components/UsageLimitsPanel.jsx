@@ -696,9 +696,27 @@ const ZCODE_RESET_COUNTDOWN_SCALES_MS = {
   weekly: 7 * 24 * 3600 * 1000,
 };
 
+// Clean-zero visibility gate shared by renderProviderExtra and
+// ZcodeResetBankSection: mirror the Codex reset bank (`buildResetBankRows`)
+// and hide on a clean zero, while a fetch failure always counts as content so
+// the error cannot hide behind the collapse toggle (issue 888).
+// A plain loop, not an arrow chain: the ui-hardcode scanner's `>...<` regex
+// would read an unbraced arrow body here as raw JSX text.
+function zcodeResetBankHasContent(data, now) {
+  if (!data || typeof data !== "object") return false;
+  if (data.error) return true;
+  for (const key of ["five_hour", "weekly"]) {
+    for (const card of data[key] || []) {
+      if (Date.parse(card?.expires_at) > now) return true;
+    }
+  }
+  return false;
+}
+
 function ZcodeResetBankSection({ data }) {
   const [open, setOpen] = useState(false);
   const now = Date.now();
+  if (!zcodeResetBankHasContent(data, now)) return null;
   const groups = [
     { key: "five_hour", label: copy("limits.label.zcode_5h") },
     { key: "weekly", label: copy("limits.label.zcode_weekly") },
@@ -729,7 +747,11 @@ function ZcodeResetBankSection({ data }) {
   // A plain loop, not `reduce`: an unbraced arrow body would let the
   // ui-hardcode scanner's `>...<` regex read this line as raw JSX text.
   let totalLive = 0;
-  for (const group of groups) totalLive += group.cards.length;
+  const liveGroups = [];
+  for (const group of groups) {
+    totalLive += group.cards.length;
+    if (group.cards.length) liveGroups.push(group);
+  }
   return (
     <div className="mt-2 border-t border-oai-gray-200/60 pt-2 dark:border-oai-gray-800">
       <button
@@ -755,7 +777,7 @@ function ZcodeResetBankSection({ data }) {
       ) : null}
       {open && !data.error ? (
         <div className="mt-2 flex flex-col gap-1.5">
-          {groups.map((group) => (
+          {liveGroups.map((group) => (
             <div key={group.key} className="flex items-center gap-2 text-[11px]">
               <span
                 data-limit-label=""
@@ -794,7 +816,11 @@ function ZcodeResetBankSection({ data }) {
 
 function renderProviderExtra(kind, data) {
   if (kind === "zcode_reset_bank") {
-    return data.reset_credits ? <ZcodeResetBankSection data={data.reset_credits} /> : null;
+    // Hand LimitWindowSection a real null when the bank is spent: a truthy
+    // element that renders nothing would still suppress the no-data line.
+    return zcodeResetBankHasContent(data.reset_credits, Date.now())
+      ? <ZcodeResetBankSection data={data.reset_credits} />
+      : null;
   }
   if (kind === "codex_meta") {
     // Credit amounts show on hover (LimitBar's title) instead of an
