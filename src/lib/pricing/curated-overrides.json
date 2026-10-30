@@ -198,6 +198,12 @@
       "cache_read": 0.25,
       "note": "Official Standard USD/MTok rates (LiteLLM entry sourced from https://developers.openai.com/api/docs/pricing, cached 2026-10-31): $2.50/$15 per MTok, $0.25 cache read. The edge table has pinned this rate since before v1.5.1; curated pins the same value so local billing no longer depends on the LiteLLM cache (issue #929). -pro/-nano/-mini keep their own SKUs."
     },
+    "gpt-5.4-pro": {
+      "input": 30,
+      "output": 180,
+      "cache_read": 3,
+      "note": "Official Pro USD/MTok rates, matching the edge table's gpt-5.4-pro entry ($30/$180, $3 cache read; https://developers.openai.com/api/docs/pricing). Companion pin for the gpt-5.4 promotion: without a curated Pro entry, the curated contained match captures provider-qualified dated snapshots (openai/gpt-5.4-pro-2026-03-05) at the base $2.50/$15 rate before the LiteLLM reverse lookup reaches the Pro SKU — 12x under local vs edge (issue #929)."
+    },
     "gpt-5.4-mini": {
       "input": 0.75,
       "output": 4.5,

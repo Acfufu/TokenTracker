@@ -1430,6 +1430,25 @@ test("index: Muse *-contributor-free SKUs are free, not unpriced (issue #744)", 
   assert.equal(paidMuse.output, 0.2);
 });
 
+test("index: GPT-5.4 Pro snapshots keep the Pro rate against the curated gpt-5.4 contained match (#929)", () => {
+  // The curated gpt-5.4 promotion must not let its contained match capture
+  // provider-qualified dated Pro snapshots at the base $2.50/$15 rate; edge
+  // has always billed these at the Pro rate.
+  const qualified = pricing.getModelPricingInfo("openai/gpt-5.4-pro-2026-03-05");
+  assert.equal(qualified.status, "priced");
+  assert.equal(qualified.source, "curated:exact-dot");
+  assert.equal(qualified.input, 30);
+  assert.equal(qualified.output, 180);
+  assert.equal(qualified.cache_read, 3);
+  // Bare forms keep their pre-promotion routes with the same rates.
+  const bareDated = pricing.getModelPricingInfo("gpt-5.4-pro-2026-03-05");
+  assert.equal(bareDated.status, "priced");
+  assert.equal(bareDated.input, 30);
+  assert.equal(bareDated.output, 180);
+  assert.equal(pricing.getModelPricingInfo("gpt-5.4-pro").input, 30);
+  assert.equal(pricing.getModelPricingInfo("gpt-5.4").input, 2.5);
+});
+
 test("index: explicit curated exact still wins over -free suffix (issue #744)", () => {
   const curated = require("../src/lib/pricing/curated-overrides.json");
   const { lookupPricing } = require("../src/lib/pricing/matcher");

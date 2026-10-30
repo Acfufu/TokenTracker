@@ -273,6 +273,82 @@ test("models promoted from LiteLLM-only coverage price identically locally and i
   }
 });
 
+test("GPT-5.4 Pro snapshots price at the Pro rate locally and in all cloud paths (#929)", () => {
+  const { getModelPricing: localPricing } = require("../src/lib/pricing");
+  const pro = { input: 30, output: 180, cache_read: 3, cache_write: 0 };
+  const norm = (o) => ({
+    input: o.input || 0,
+    output: o.output || 0,
+    cache_read: o.cache_read || 0,
+    cache_write: o.cache_write || 0,
+  });
+  // The qualified dated snapshot is the regression shape: the curated gpt-5.4
+  // contained match used to capture it at the base $2.50/$15 rate before the
+  // LiteLLM reverse lookup reached the Pro SKU, while edge billed 30/180.
+  const variants = ["gpt-5.4-pro", "gpt-5.4-pro-2026-03-05", "openai/gpt-5.4-pro-2026-03-05"];
+  for (const name of [CANONICAL, ...MIRRORS]) {
+    const { code } = transformSync(extractBlock(name), { loader: "ts", target: "es2020" });
+    const edgePricing = vm.runInNewContext(`${code}\ngetModelPricing;`);
+    for (const model of variants) {
+      assert.deepEqual(
+        norm(JSON.parse(JSON.stringify(edgePricing(model)))),
+        pro,
+        `${name}: ${model}`,
+      );
+      const local = localPricing(model);
+      for (const field of ["input", "output", "cache_read", "cache_write"]) {
+        assert.equal(local[field] || 0, pro[field], `local ${model}.${field}`);
+      }
+    }
+    // The base SKU stays distinct from Pro.
+    assert.notDeepEqual(
+      JSON.parse(JSON.stringify(edgePricing("gpt-5.4"))),
+      JSON.parse(JSON.stringify(edgePricing("gpt-5.4-pro"))),
+      `${name}: base gpt-5.4 must not bill at the Pro rate`,
+    );
+    assert.equal(localPricing("gpt-5.4").input, 2.5, "local base gpt-5.4");
+  }
+});
+
+test("provider-qualified Muse ids price identically locally and in all cloud paths (zero on both sides today)", () => {
+  // Qualified forms (LiteLLM-style `meta/…`, `opencode_go/…`) are priced on
+  // NEITHER side: the local contained match only runs on the dot-restored form
+  // and the LiteLLM snapshot carries no Muse keys, while edge resolves bare
+  // exact keys only. Production rows (2026-01-01 → 2026-10-31) all report the
+  // bare ids, so both sides agree at zero. Pin the agreement — if a qualified
+  // matcher ever lands, it must land on both sides in the same change.
+  const { getModelPricingInfo } = require("../src/lib/pricing");
+  const zero = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  const qualified = [
+    "meta/muse-spark-1.2-contributor",
+    "meta/muse-spark-1.3-contributor",
+    "opencode_go/muse-spark-1.2-contributor",
+  ];
+  for (const name of [CANONICAL, ...MIRRORS]) {
+    const { code } = transformSync(extractBlock(name), { loader: "ts", target: "es2020" });
+    const edgePricing = vm.runInNewContext(`${code}\ngetModelPricing;`);
+    for (const model of qualified) {
+      assert.deepEqual(
+        JSON.parse(JSON.stringify(edgePricing(model))),
+        zero,
+        `${name}: ${model}`,
+      );
+      assert.equal(getModelPricingInfo(model, { source: "muse" }).status, "unpriced", `local ${model}`);
+    }
+    // Qualified free ids end in -free and stay free on both sides.
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(edgePricing("meta/muse-spark-1.2-contributor-free"))),
+      zero,
+      `${name}: qualified free`,
+    );
+    assert.equal(
+      getModelPricingInfo("meta/muse-spark-1.2-contributor-free", { source: "muse" }).status,
+      "free",
+      "local qualified free",
+    );
+  }
+});
+
 test("canonical pricing block retains the complete iFlytek MaaS source table", () => {
   const block = extractBlock(CANONICAL);
   const pricingMatch = block.match(
