@@ -19,6 +19,8 @@ const {
   resolveZcodeProviderBillingBaseUrl,
   resolveZcodeProviderQuotaUrl,
   loadZcodeSelectedPlanProviderKeys,
+  scanZcodeBalanceLogs,
+  zcodePlanKindFromProviderId,
   zcodeRegionFromProviderId,
 } = require("../src/lib/zcode-limits");
 
@@ -1712,6 +1714,17 @@ describe("zcodeRegionFromProviderId", () => {
     assert.equal(zcodeRegionFromProviderId("some-other-provider"), null);
     assert.equal(zcodeRegionFromProviderId(null), null);
   });
+
+  it("maps built-in and per-account provider ids onto their plan kind", () => {
+    assert.equal(zcodePlanKindFromProviderId("builtin:zai-start-plan"), "start");
+    assert.equal(zcodePlanKindFromProviderId("builtin:bigmodel-coding-plan"), "coding");
+    assert.equal(zcodePlanKindFromProviderId("account:zai-start-plan"), "start");
+    assert.equal(zcodePlanKindFromProviderId("account:bigmodel-individual-coding-plan"), "coding");
+    assert.equal(zcodePlanKindFromProviderId("account:bigmodel-team-coding-plan"), "coding");
+    assert.equal(zcodePlanKindFromProviderId("account:bigmodel-something-new"), null);
+    assert.equal(zcodePlanKindFromProviderId("some-other-provider"), null);
+    assert.equal(zcodePlanKindFromProviderId(null), null);
+  });
 });
 
 describe("ZCode other-region log snapshot", () => {
@@ -1905,6 +1918,77 @@ describe("ZCode other-region log snapshot", () => {
       assert.match(result.error, /ZCode coding plan API error/);
       assert.equal(result.source, undefined);
       assert.equal(result.other_region, undefined);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt per-account start-plan logs for a failing coding-plan provider", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-account-plan-kind-"));
+    try {
+      const v2 = writeZcodeCodingPlanConfig(tmp, "bigmodel");
+      writeZcodeBalanceLog(v2, "2026-07-08 09:08:30.077", { providerId: "account:bigmodel-start-plan" });
+      const result = await fetchZcodeLimits({
+        home: tmp,
+        env: { TOKENTRACKER_ZCODE_APP_VERSION: "3.3.2" },
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          async json() {
+            return { code: 500, success: false, msg: "Not authenticated", data: null };
+          },
+        }),
+      });
+      // The per-account mirror of the builtin exact-match rule: a coding-plan
+      // candidate only adopts per-account records of the same plan kind.
+      assert.equal(result.configured, true);
+      assert.match(result.error, /ZCode coding plan API error/);
+      assert.equal(result.source, undefined);
+      assert.equal(result.other_region, undefined);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts per-account team coding-plan records for a coding-plan candidate", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-team-kind-"));
+    try {
+      const v2 = path.join(tmp, ".zcode", "v2");
+      fs.mkdirSync(v2, { recursive: true });
+      writeZcodeMultiBalanceLog(v2, "2026-07-08", [
+        { timestamp: "2026-07-08 09:08:30.077", providerId: "account:zai-team-coding-plan", body: balanceBody() },
+      ]);
+      const scan = scanZcodeBalanceLogs({
+        home: tmp,
+        env: { TOKENTRACKER_ZCODE_APP_VERSION: "3.3.2" },
+        providerKeys: ["builtin:zai-coding-plan"],
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+      });
+      assert.equal(scan.preferred.providerKey, "account:zai-team-coding-plan");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the freshest per-region record even when log lines are out of timestamp order", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-region-order-"));
+    try {
+      const v2 = path.join(tmp, ".zcode", "v2");
+      fs.mkdirSync(v2, { recursive: true });
+      writeZcodeMultiBalanceLog(v2, "2026-07-08", [
+        { timestamp: "2026-07-08 09:09:00.077", providerId: "account:bigmodel-individual-coding-plan", body: bigmodelBalanceBody() },
+        { timestamp: "2026-07-08 09:08:00.077", providerId: "account:bigmodel-start-plan", body: balanceBody() },
+      ]);
+      const scan = scanZcodeBalanceLogs({
+        home: tmp,
+        env: { TOKENTRACKER_ZCODE_APP_VERSION: "3.3.2" },
+        providerKeys: ["builtin:bigmodel-coding-plan"],
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+      });
+      // The backward scan hits the 09:08 line first; byRegion must still keep
+      // the 09:09 record for the other-region snapshot.
+      assert.equal(scan.byRegion.get("bigmodel").providerKey, "account:bigmodel-individual-coding-plan");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
