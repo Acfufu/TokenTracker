@@ -1012,6 +1012,17 @@ function zcodeLogFallbackResult(logRecord, errors = []) {
 // (region × plan kind) so one region's billing read never falls back to
 // another region's data (#938's ownership principle).
 
+// Cache partitions are also scoped to the credential that produced the
+// windows: two logins on the same region × plan kind share one providerKey,
+// so an account switch followed by a live failure would otherwise serve the
+// previous login's bars. The identity is a non-reversible SHA-256 prefix of
+// the API key plus the applicable team scope (coding-plan quota is
+// team-scoped); no secret material is persisted.
+function zcodeCacheIdentity(auth = {}) {
+  const fingerprint = crypto.createHash("sha256").update(String(auth.apiKey || "")).digest("hex").slice(0, 32);
+  return `${fingerprint}|${typeof auth.teamContext === "string" ? auth.teamContext : ""}`;
+}
+
 function zcodeLimitsCachePath({ home } = {}) {
   return path.join(home || os.homedir(), ".tokentracker", "tracker", ZCODE_LIMITS_CACHE_FILE);
 }
@@ -1038,9 +1049,11 @@ function zcodeCachedBucket(bucket, { cachedAtMs, nowMs } = {}) {
 /**
  * Read the last-good windows for the first provider key with a usable cache
  * entry. `providerKeys` arrives in live candidate priority order; keys whose
- * live attempts all ended in auth errors are withheld by the caller.
+ * live attempts all ended in auth errors are withheld by the caller, and
+ * `identityByKey` scopes each key to the credentials that could have
+ * produced its windows.
  */
-function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [] } = {}) {
+function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [], identityByKey } = {}) {
   let parsed;
   try {
     parsed = JSON.parse(fs.readFileSync(zcodeLimitsCachePath({ home }), "utf8"));
@@ -1051,6 +1064,9 @@ function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [] } = 
   for (const providerKey of providerKeys) {
     const raw = parsed[providerKey];
     if (!raw || typeof raw !== "object") continue;
+    const acceptableIdentities = identityByKey?.get(providerKey);
+    if (!acceptableIdentities || !acceptableIdentities.size) continue;
+    if (typeof raw.identity !== "string" || !acceptableIdentities.has(raw.identity)) continue;
     const cachedAtMs = Date.parse(raw.cached_at || "");
     if (!Number.isFinite(cachedAtMs) || cachedAtMs > nowMs + 60_000) continue;
     const context = { cachedAtMs, nowMs };
@@ -1060,7 +1076,7 @@ function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [] } = 
     const primaryWindow = zcodeCachedWindow(raw.primary_window, context);
     const secondaryWindow = zcodeCachedWindow(raw.secondary_window, context);
     const tertiaryWindow = zcodeCachedWindow(raw.tertiary_window, context);
-    if (!primaryWindow && !secondaryWindow && !tertiaryWindow && !buckets.length) continue;
+    if (!primaryWindow && !secondaryWindow && !tertiaryWindow && !buckets.some((bucket) => bucket.window)) continue;
     return {
       configured: true,
       error: null,
@@ -1082,8 +1098,8 @@ function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [] } = 
 }
 
 /** Merge one provider partition into the disk cache; best-effort, never throws. */
-function writeZcodeLimitsCache(limits, { home, nowMs = Date.now(), providerKey } = {}) {
-  if (!providerKey || !limits?.configured || limits.error) return;
+function writeZcodeLimitsCache(limits, { home, nowMs = Date.now(), providerKey, identity } = {}) {
+  if (!providerKey || !identity || !limits?.configured || limits.error) return;
   if (!limits.primary_window && !limits.secondary_window && !limits.tertiary_window) return;
   const cachePath = zcodeLimitsCachePath({ home });
   let payload = {};
@@ -1092,6 +1108,7 @@ function writeZcodeLimitsCache(limits, { home, nowMs = Date.now(), providerKey }
     if (parsed && typeof parsed === "object") payload = parsed;
   } catch (_error) {}
   payload[providerKey] = {
+    identity,
     plan_kind: typeof limits.plan_kind === "string" ? limits.plan_kind : null,
     plan_id: typeof limits.plan_id === "string" ? limits.plan_id : null,
     plan_label: typeof limits.plan_label === "string" ? limits.plan_label : null,
@@ -1187,7 +1204,12 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
       // Last-good disk cache (house pattern: codex / ark / qoder): persist the
       // windows so a later network failure serves stale bars instead of a
       // vanished card. Login-scoped extras stay live-only.
-      writeZcodeLimitsCache(result, { home, nowMs, providerKey: auth.providerKey });
+      writeZcodeLimitsCache(result, {
+        home,
+        nowMs,
+        providerKey: auth.providerKey,
+        identity: zcodeCacheIdentity(auth),
+      });
       if (Array.isArray(normalized.buckets) && normalized.buckets.length === 0 && authCandidates.length > 1) {
         emptySuccess = emptySuccess || result;
         continue;
@@ -1255,6 +1277,17 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     }
   }
   if (emptySuccess) return emptySuccess;
+  // Rank fallback partitions in live candidate priority order, and withhold
+  // any partition whose attempts all ended in auth errors: re-login is
+  // actionable, so neither a stale log record nor stale cache bars may mask
+  // it (opencode-go auth_error / codex reauth precedent).
+  const cacheOrder = [];
+  for (const auth of authCandidates) {
+    if (!cacheOrder.includes(auth.providerKey)) cacheOrder.push(auth.providerKey);
+  }
+  const cacheEligible = cacheOrder.filter((providerKey) =>
+    partitionFailures.some((failure) => failure.providerKey === providerKey && !failure.authError));
+  const authErrorOnlyProviders = new Set(cacheOrder.filter((providerKey) => !cacheEligible.includes(providerKey)));
   const logFallback = loadLatestZcodeBalanceFromLogs({
     home,
     env,
@@ -1262,18 +1295,21 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     nowMs,
     requireProviderMatch: authCandidates.some((auth) => auth.planKind === "coding-plan"),
   });
-  if (logFallback) return zcodeLogFallbackResult(logFallback, errors);
-  // Last stop before the error result: serve the disk cache in live candidate
-  // priority order. A partition whose attempts all ended in auth errors keeps
-  // its error surfaced — re-login is actionable and must not be masked by
-  // stale bars (opencode-go auth_error / codex reauth precedent).
-  const cacheOrder = [];
-  for (const auth of authCandidates) {
-    if (!cacheOrder.includes(auth.providerKey)) cacheOrder.push(auth.providerKey);
+  // A log record for a provider with no live candidate is untouched by this
+  // gate: nothing was attempted for it, so no error is being masked.
+  if (logFallback && !authErrorOnlyProviders.has(logFallback.providerKey)) {
+    return zcodeLogFallbackResult(logFallback, errors);
   }
-  const cacheEligible = cacheOrder.filter((providerKey) =>
-    partitionFailures.some((failure) => failure.providerKey === providerKey && !failure.authError));
-  const cached = readZcodeLimitsCache({ home, nowMs, providerKeys: cacheEligible });
+  // Last stop before the error result: serve the disk cache in live candidate
+  // priority order, scoped to the credential identity that produced the
+  // windows so an account switch cannot inherit the previous login's bars.
+  const identityByKey = new Map();
+  for (const auth of authCandidates) {
+    if (!cacheEligible.includes(auth.providerKey)) continue;
+    if (!identityByKey.has(auth.providerKey)) identityByKey.set(auth.providerKey, new Set());
+    identityByKey.get(auth.providerKey).add(zcodeCacheIdentity(auth));
+  }
+  const cached = readZcodeLimitsCache({ home, nowMs, providerKeys: cacheEligible, identityByKey });
   if (cached) return cached;
   return {
     configured: true,
@@ -1305,5 +1341,6 @@ module.exports = {
   fetchZcodeStartPlanGrants,
   readZcodeLimitsCache,
   writeZcodeLimitsCache,
+  zcodeCacheIdentity,
   fetchZcodeLimits,
 };

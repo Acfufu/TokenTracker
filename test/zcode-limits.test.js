@@ -21,6 +21,7 @@ const {
   resolveZcodeProviderQuotaUrl,
   loadZcodeSelectedPlanProviderKeys,
   writeZcodeLimitsCache,
+  zcodeCacheIdentity,
 } = require("../src/lib/zcode-limits");
 
 // Real billing/balance payload shape captured from ZCode's own logs.
@@ -2007,6 +2008,10 @@ describe("ZCode limits disk cache", () => {
   const okResponse = (body) => async () => ({ ok: true, status: 200, async json() { return body; } });
   const statusResponse = (status, body = {}) => async () => ({ ok: false, status, async json() { return body; } });
   const cachePath = (tmp) => path.join(tmp, ".tokentracker", "tracker", "zcode-usage-limits-cache.json");
+  // Stand-in for the credential fingerprint written by writeZcodeLimitsCache;
+  // fetchZcodeLimits-based tests derive the real one from their config's apiKey.
+  const CACHE_IDENTITY = "cache-fingerprint|";
+  const identityMap = (...keys) => new Map(keys.map((key) => [key, new Set([CACHE_IDENTITY])]));
 
   it("writes last-good windows to the disk cache on live success", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-write-"));
@@ -2017,6 +2022,7 @@ describe("ZCode limits disk cache", () => {
       const parsed = JSON.parse(fs.readFileSync(cachePath(tmp), "utf8"));
       assert.equal(parsed["builtin:bigmodel-start-plan"].plan_kind, "start-plan");
       assert.equal(parsed["builtin:bigmodel-start-plan"].plan_label, "Start");
+      assert.equal(typeof parsed["builtin:bigmodel-start-plan"].identity, "string");
       assert.equal(parsed["builtin:bigmodel-start-plan"].primary_window.used_percent, 20);
       assert.equal(parsed["builtin:bigmodel-start-plan"].cached_at, T0_ISO);
       assert.equal(parsed["builtin:zai-start-plan"], undefined);
@@ -2052,7 +2058,7 @@ describe("ZCode limits disk cache", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-isolate-"));
     try {
       writeStartPlanConfig(tmp);
-      writeZcodeLimitsCache(seededLimits(), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan" });
+      writeZcodeLimitsCache(seededLimits(), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan", identity: CACHE_IDENTITY });
       const result = await fetchZcodeLimits({
         home: tmp,
         env: APP_ENV,
@@ -2084,16 +2090,16 @@ describe("ZCode limits disk cache", () => {
         secondary_window: { used_percent: 10, reset_at: new Date(T0 + 3_600_000).toISOString() },
         tertiary_window: null,
       };
-      writeZcodeLimitsCache(rolled, { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan" });
-      const cached = readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"] });
+      writeZcodeLimitsCache(rolled, { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      const cached = readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"], identityByKey: identityMap("builtin:bigmodel-start-plan") });
       assert.equal(cached.stale, true);
       assert.equal(cached.primary_window, null);
       assert.equal(cached.secondary_window.used_percent, 10);
       assert.deepEqual(cached.buckets.map((b) => b.show_name), ["Future"]);
 
       const allRolled = { ...rolled, primary_window: rolled.primary_window, secondary_window: null, tertiary_window: null, buckets: [rolled.buckets[0]] };
-      writeZcodeLimitsCache(allRolled, { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan" });
-      assert.equal(readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"] }), null);
+      writeZcodeLimitsCache(allRolled, { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      assert.equal(readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"], identityByKey: identityMap("builtin:bigmodel-start-plan") }), null);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -2113,12 +2119,12 @@ describe("ZCode limits disk cache", () => {
         secondary_window: null,
         tertiary_window: null,
       };
-      writeZcodeLimitsCache(undated, { home: tmp, nowMs: T0 - 3_600_000, providerKey: "builtin:bigmodel-start-plan" });
-      const fresh = readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"] });
+      writeZcodeLimitsCache(undated, { home: tmp, nowMs: T0 - 3_600_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      const fresh = readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"], identityByKey: identityMap("builtin:bigmodel-start-plan") });
       assert.equal(fresh.primary_window.used_percent, 42);
 
-      writeZcodeLimitsCache(undated, { home: tmp, nowMs: T0 - 13 * 3_600_000, providerKey: "builtin:bigmodel-start-plan" });
-      assert.equal(readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"] }), null);
+      writeZcodeLimitsCache(undated, { home: tmp, nowMs: T0 - 13 * 3_600_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      assert.equal(readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"], identityByKey: identityMap("builtin:bigmodel-start-plan") }), null);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -2127,11 +2133,11 @@ describe("ZCode limits disk cache", () => {
   it("skips writing the cache for error results and windowless successes", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-gate-"));
     try {
-      writeZcodeLimitsCache({ configured: true, error: "boom" }, { home: tmp, nowMs: T0, providerKey: "builtin:bigmodel-start-plan" });
+      writeZcodeLimitsCache({ configured: true, error: "boom" }, { home: tmp, nowMs: T0, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
       writeZcodeLimitsCache({
         configured: true, error: null, plan_kind: "start-plan", buckets: [],
         primary_window: null, secondary_window: null, tertiary_window: null,
-      }, { home: tmp, nowMs: T0, providerKey: "builtin:bigmodel-start-plan" });
+      }, { home: tmp, nowMs: T0, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
       assert.equal(fs.existsSync(cachePath(tmp)), false);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -2142,7 +2148,7 @@ describe("ZCode limits disk cache", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-auth-"));
     try {
       writeStartPlanConfig(tmp);
-      writeZcodeLimitsCache(seededLimits(), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan" });
+      writeZcodeLimitsCache(seededLimits(), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
       const result = await fetchZcodeLimits({ home: tmp, env: APP_ENV, nowMs: T0, fetchImpl: statusResponse(401) });
       assert.match(result.error, /Not authenticated/);
       assert.equal(result.source, undefined);
@@ -2156,8 +2162,10 @@ describe("ZCode limits disk cache", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-mixed-"));
     try {
       writeDualStartPlanConfig(tmp);
-      writeZcodeLimitsCache(seededLimits({ percent: 11 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan" });
-      writeZcodeLimitsCache(seededLimits({ percent: 22 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan" });
+      // Seed with the identities the live candidates will present, so the
+      // test exercises the real credential-scoped read path.
+      writeZcodeLimitsCache(seededLimits({ percent: 11 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: zcodeCacheIdentity({ apiKey: "bm-key" }) });
+      writeZcodeLimitsCache(seededLimits({ percent: 22 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan", identity: zcodeCacheIdentity({ apiKey: "zai-key" }) });
       const seenKeys = [];
       const result = await fetchZcodeLimits({
         home: tmp,
@@ -2228,6 +2236,93 @@ describe("ZCode limits disk cache", () => {
       assert.equal(result.source, "zcode-log");
       assert.equal(result.stale, true);
       assert.equal(result.cached_at, new Date(2026, 6, 8, 9, 8, 30, 77).toISOString());
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not serve a disk-cache hit that has no surviving window", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-windowless-"));
+    try {
+      // Every window has rolled, but a windowless bucket still survives the
+      // snapshot TTL — that is not a usable fallback and must not mask the
+      // live error.
+      writeZcodeLimitsCache({
+        configured: true, error: null, plan_kind: "start-plan",
+        buckets: [{ show_name: "Legacy bucket" }],
+        primary_window: { used_percent: 90, reset_at: new Date(T0 - 3_600_000).toISOString() },
+        secondary_window: null, tertiary_window: null,
+      }, { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      assert.equal(
+        readZcodeLimitsCache({ home: tmp, nowMs: T0, providerKeys: ["builtin:bigmodel-start-plan"], identityByKey: identityMap("builtin:bigmodel-start-plan") }),
+        null,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not serve the previous login's cached windows after an account switch", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-switch-"));
+    try {
+      writeStartPlanConfig(tmp);
+      await fetchZcodeLimits({ home: tmp, env: APP_ENV, nowMs: T0, fetchImpl: okResponse(futureBalanceBody()) });
+      // Same region × plan kind, new credential: the cached partition must not
+      // be inherited by the switched login.
+      const configPath = path.join(tmp, ".zcode", "v2", "config.json");
+      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      config.provider["builtin:bigmodel-start-plan"].options.apiKey = "switched-key";
+      fs.writeFileSync(configPath, JSON.stringify(config), "utf8");
+      const result = await fetchZcodeLimits({
+        home: tmp,
+        env: APP_ENV,
+        nowMs: T0 + 5 * 60_000,
+        fetchImpl: statusResponse(500, { code: 500, msg: "boom" }),
+      });
+      assert.match(result.error, /500/);
+      assert.equal(result.source, undefined);
+      assert.equal(result.stale, undefined);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mask a re-login error with a log record from the failed partition", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-log-auth-"));
+    try {
+      const v2 = writeStartPlanConfig(tmp);
+      writeZcodeBalanceLog(v2, "2026-07-08 09:08:30.077", { providerId: "builtin:bigmodel-start-plan" });
+      const result = await fetchZcodeLimits({
+        home: tmp,
+        env: APP_ENV,
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+        fetchImpl: statusResponse(401),
+      });
+      assert.equal(result.configured, true);
+      assert.match(result.error, /Not authenticated/);
+      assert.equal(result.source, undefined);
+      assert.equal(result.stale, undefined);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("still serves a log record for a provider with no live candidate", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-log-uncandidate-"));
+    try {
+      const v2 = writeStartPlanConfig(tmp);
+      // The log record belongs to a provider the current config does not list,
+      // so nothing was attempted for it and no error is being masked.
+      writeZcodeBalanceLog(v2, "2026-07-08 09:08:30.077", { providerId: "builtin:zai-start-plan" });
+      const result = await fetchZcodeLimits({
+        home: tmp,
+        env: APP_ENV,
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+        fetchImpl: statusResponse(500, { code: 500, msg: "boom" }),
+      });
+      assert.equal(result.source, "zcode-log");
+      assert.equal(result.provider_key, "builtin:zai-start-plan");
+      assert.equal(result.stale, true);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
