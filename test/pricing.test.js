@@ -1420,11 +1420,14 @@ test("index: Muse *-contributor-free SKUs are free, not unpriced (issue #744)", 
       model,
     );
   }
-  // Unsuffixed contributor ids stay unpriced until we have evidence they are $0.
-  assert.equal(
-    pricing.getModelPricingInfo("muse-spark-1.3-contributor", { source: "muse" }).status,
-    "unpriced",
-  );
+  // Unsuffixed contributor ids are PAID, not free: promoted into curated with
+  // the LiteLLM-verified $0.10/$0.20/$0.002 rates so the cloud account views
+  // price them too (issue #929).
+  const paidMuse = pricing.getModelPricingInfo("muse-spark-1.3-contributor", { source: "muse" });
+  assert.equal(paidMuse.status, "priced");
+  assert.equal(paidMuse.source, "curated:exact");
+  assert.equal(paidMuse.input, 0.1);
+  assert.equal(paidMuse.output, 0.2);
 });
 
 test("index: explicit curated exact still wins over -free suffix (issue #744)", () => {
