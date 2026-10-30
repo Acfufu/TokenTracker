@@ -980,25 +980,30 @@ function extractZcodeBalanceLogRecord(line) {
 }
 
 /**
- * One backward pass over the recent ZCode logs, collecting:
+ * One backward pass over the recent ZCode logs (today + yesterday), collecting:
  *   preferred — freshest record matching the candidate providers. Built-in ids
  *     must byte-equal a candidate key; the 3.14+ per-account ids
- *     (`account:<family>-<plan>…`) never do, so they match by region and plan
- *     kind instead — a candidate of that region and plan vouches for the
- *     record's own family, so a coding-plan candidate never adopts a
- *     start-plan record (the per-account mirror of the built-in exact rule).
+ *     (`account:<family>-<plan>…`) never do, so they match the exact
+ *     (region, plan kind) pair of one candidate — never the cross product of
+ *     the two traits, so a bigmodel-coding + zai-start candidate list cannot
+ *     adopt a zai coding-plan record.
  *   fallback  — freshest record of any provider.
  *   byRegion  — freshest record per region ("bigmodel" | "zai"), for the
  *     other-region snapshot.
- * Records outside the age window count nowhere.
+ * Records outside the age window count nowhere. Every eligible line of both
+ * files is visited and buckets keep the max-timestamp record, since log lines
+ * can land out of timestamp order.
  */
 function scanZcodeBalanceLogs({ home, env = process.env, providerKeys = [], nowMs = Date.now() } = {}) {
   const scan = { preferred: null, fallback: null, byRegion: new Map() };
   if (env.TOKENTRACKER_ZCODE_DISABLE_LOG_FALLBACK === "1") return scan;
   const maxAgeMs = parsePositiveInteger(env.TOKENTRACKER_ZCODE_LOG_MAX_AGE_MS, DEFAULT_ZCODE_LOG_FALLBACK_MAX_AGE_MS);
   const preferredProviders = new Set(providerKeys.filter(Boolean));
-  const preferredRegions = new Set(providerKeys.map((key) => zcodeRegionFromProviderId(key)).filter(Boolean));
-  const preferredPlanKinds = new Set(providerKeys.map((key) => zcodePlanKindFromProviderId(key)).filter(Boolean));
+  const preferredPairs = new Set(providerKeys.map((key) => {
+    const region = zcodeRegionFromProviderId(key);
+    const planKind = zcodePlanKindFromProviderId(key);
+    return region && planKind ? `${region}:${planKind}` : null;
+  }).filter(Boolean));
   for (const logPath of recentZcodeLogPaths({ home, env, nowMs })) {
     if (!fs.existsSync(logPath)) continue;
     let text = "";
@@ -1021,17 +1026,13 @@ function scanZcodeBalanceLogs({ home, env = process.env, providerKeys = [], nowM
       }
       const regionMatch = Boolean(region)
         && record.providerKey.startsWith("account:")
-        && preferredRegions.has(region)
-        && preferredPlanKinds.has(zcodePlanKindFromProviderId(record.providerKey));
+        && preferredPairs.has(`${region}:${zcodePlanKindFromProviderId(record.providerKey)}`);
       if (
         (preferredProviders.has(record.providerKey) || regionMatch)
         && (!scan.preferred || record.timestampMs > scan.preferred.timestampMs)
       ) {
         scan.preferred = record;
       }
-      // Both regions found plus both fallback buckets filled: nothing later in
-      // the file (or in yesterday's log) can be fresher, so stop reading.
-      if (scan.preferred && scan.fallback && scan.byRegion.size >= 2) return scan;
     }
   }
   return scan;
@@ -1129,8 +1130,8 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
   const authCandidates = loadZcodeAuthCandidates({ home, env });
   // One log pass serves both the failed-candidate fallback and the other
   // region's snapshot. selectLogFallback keeps the former gate semantics:
-  // builtin: candidates only adopt same-region, same-plan-kind per-account
-  // records.
+  // builtin: candidates only adopt per-account records carrying the same
+  // (region, plan kind) pair as one of them.
   const logScan = scanZcodeBalanceLogs({
     home,
     env,

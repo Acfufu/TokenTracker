@@ -1994,6 +1994,55 @@ describe("ZCode other-region log snapshot", () => {
     }
   });
 
+  it("does not adopt a per-account record matching no single candidate's region and plan kind", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-pair-kind-"));
+    try {
+      const v2 = path.join(tmp, ".zcode", "v2");
+      fs.mkdirSync(v2, { recursive: true });
+      writeZcodeMultiBalanceLog(v2, "2026-07-08", [
+        { timestamp: "2026-07-08 09:08:30.077", providerId: "account:zai-individual-coding-plan", body: balanceBody() },
+      ]);
+      // Candidates span both regions and both plan kinds, but no single one
+      // carries (zai, coding) — the record must not ride the cross product.
+      const scan = scanZcodeBalanceLogs({
+        home: tmp,
+        env: { TOKENTRACKER_ZCODE_APP_VERSION: "3.3.2" },
+        providerKeys: ["builtin:bigmodel-coding-plan", "builtin:zai-start-plan"],
+        nowMs: new Date(2026, 6, 8, 9, 10, 0).getTime(),
+      });
+      assert.equal(scan.preferred, null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("visits every eligible line before claiming the freshest regional snapshot", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-scan-order-"));
+    try {
+      const v2 = path.join(tmp, ".zcode", "v2");
+      fs.mkdirSync(v2, { recursive: true });
+      // Newest zai record sits above lines that already fill both regions and
+      // preferred; the scan must still reach it, so there is no early return.
+      writeZcodeMultiBalanceLog(v2, "2026-07-08", [
+        { timestamp: "2026-07-08 10:05:00.077", providerId: "account:zai-start-plan", body: balanceBody() },
+        { timestamp: "2026-07-08 10:00:00.077", providerId: "account:bigmodel-individual-coding-plan", body: bigmodelBalanceBody() },
+        { timestamp: "2026-07-08 10:01:00.077", providerId: "account:zai-start-plan", body: balanceBody() },
+      ]);
+      const scan = scanZcodeBalanceLogs({
+        home: tmp,
+        env: { TOKENTRACKER_ZCODE_APP_VERSION: "3.3.2" },
+        providerKeys: ["builtin:bigmodel-coding-plan", "builtin:zai-start-plan"],
+        nowMs: new Date(2026, 6, 8, 10, 10, 0).getTime(),
+      });
+      assert.equal(
+        scan.byRegion.get("zai").timestampMs,
+        new Date(2026, 6, 8, 10, 5, 0, 77).getTime(),
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces both regions from logs alone when no credentials remain", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-log-only-"));
     try {
