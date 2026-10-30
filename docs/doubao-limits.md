@@ -52,15 +52,37 @@ The three-window model is confirmed by Doubao's own UI strings
 Creation-packs (Seedream/Seedance credits) sit outside the 5h/7d windows and are
 not reported.
 
-**Paid-account caveat:** the observations above come from a free account, whose
-`window_limit_section` / `window_limit_groups` are empty arrays. The exact field
-names inside a populated window group have not been observed yet, so the parser
-is deliberately lenient (candidate field spellings, `used/total` → percentage,
-several reset-timestamp fields, one nested wrapper level) and degrades unknown
-shapes to a missing window instead of an invented bar. Free accounts therefore
-render no rows at all (and no plan label) rather than fake 0% bars — the same
-treatment as Qoder's empty 0/0 buckets. A paid-account sample is needed to pin
-the precise mapping.
+**Paid-window schema (peer-verified).** A paid personal account has not been
+observed directly yet — the recon above ran on a free account, whose
+`window_limit_section` / `window_limit_groups` are empty arrays — but the
+populated shape has been independently confirmed by several open-source readers
+of the same endpoints (smart-open/TraeWorkAssistant, ChanningYuan/usageBar for
+Doubao Work, Fullstop000/doubao-cli, cclank/tokei, Aafff623/pane):
+
+- `quota/summary` nests three levels:
+  `window_limit_section` (object) → `window_limit_groups[]` → `window_limits[]`;
+- `window_type` is a number: 1 = 5-hour, 2 = 7-day, 3 = subscription total
+  (not one of TokenTracker's three windows), 4 = month;
+- window items carry `used_percent` (0-100 integer), optional
+  `used_amount`/`total_amount` display strings ("17", "2,100", "<1"),
+  `less_than_one_percent`, `usage_exhausted`, and a millisecond `end_time`
+  reset stamp (taken as-is, never back-computed);
+- `exemption.active` on the 5-hour window marks it unlimited; TokenTracker
+  drops it rather than drawing a meaningless bar;
+- feature groups are keyed by `feature_group` ("general" is the
+  personal-subscription one; preferred without refusing the others).
+
+The parser accepts this shape as a superset of the older lenient spellings and
+still degrades unrecognized shapes to a missing window instead of an invented
+bar, so personal-schema drift would render no rows at all rather than fake 0%
+bars — the same treatment as Qoder's empty 0/0 buckets. A direct paid-account
+capture is still wanted to confirm the personal (non-Work) payload
+byte-for-byte.
+
+One deliberate divergence from peers: they default to
+`{"product_line":"membership"}`, while TokenTracker's verified free-account
+observation is that an empty `product_line` returns the fullest payload, so it
+keeps `""` until a paid sample says otherwise.
 
 ## Privacy
 

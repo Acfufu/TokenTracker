@@ -16,9 +16,15 @@
 // limits-only. Free accounts return empty window arrays: the section renders
 // nothing rather than a fake 0% bar (same treatment as Qoder's empty 0/0).
 //
-// The paid-account window schema has not been observed yet (free-account
-// recon only), so parsing is deliberately lenient: unrecognized shapes
-// degrade to null windows instead of invented percentages.
+// The personal paid-window schema has not been captured directly yet (free-
+// account recon only), but its shape is peer-verified: several open-source
+// readers of these same endpoints (TraeWorkAssistant, usageBar, doubao-cli,
+// tokei — see docs/doubao-limits.md) independently confirm a numeric
+// window_type, the nested window_limit_groups/window_limits payload,
+// display-string amounts and the less_than_one_percent / usage_exhausted /
+// exemption flags. Parsing accepts that shape as a superset of the older
+// lenient spellings and still degrades unrecognized shapes to null windows
+// instead of invented percentages.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -40,15 +46,15 @@ const DOUBAO_LIMITS_CACHE_FILE = "doubao-usage-limits-cache.json";
 const DOUBAO_LIMITS_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DOUBAO_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS = 12 * 60 * 60 * 1000;
 
-// Candidate field spellings, camelCase and snake_case: the paid-window schema
-// is unverified, so accept the plausible variants rather than a single guess.
+// Candidate field spellings, camelCase and snake_case: peers confirm the core
+// fields below, and the remaining variants keep the unverified corners covered.
 const DOUBAO_WINDOW_KIND_FIELDS = [
   "window_type", "windowType", "type", "window_key", "windowKey", "key",
   "name", "label", "title", "window", "period", "window_name", "windowName",
   "limit_type", "limitType", "window_limit_type", "windowLimitType",
 ];
-const DOUBAO_USED_FIELDS = ["used_quota", "usedQuota", "used_value", "usedValue", "used", "used_amount", "used_credits"];
-const DOUBAO_TOTAL_FIELDS = ["total_quota", "totalQuota", "limit_value", "limitValue", "total", "limit_quota", "limitQuota", "limit", "total_credits"];
+const DOUBAO_USED_FIELDS = ["used_quota", "usedQuota", "used_value", "usedValue", "used", "used_amount", "usedAmount", "used_credits"];
+const DOUBAO_TOTAL_FIELDS = ["total_quota", "totalQuota", "limit_value", "limitValue", "total", "limit_quota", "limitQuota", "limit", "total_credits", "total_amount", "totalAmount"];
 const DOUBAO_REMAINING_FIELDS = ["remaining_quota", "remainingQuota", "remaining_value", "remainingValue", "remaining", "remaining_credits"];
 const DOUBAO_PERCENT_FIELDS = ["used_percent", "usedPercent", "usage_percent", "usagePercent", "usage_percentage", "usagePercentage", "percent"];
 const DOUBAO_RESET_FIELDS = [
@@ -64,11 +70,34 @@ const DOUBAO_WINDOW_KINDS = [
   { slot: "secondary_window", patterns: /7\s*d|seven[\s_-]?day|7[\s_-]?day|weekly/i },
   { slot: "tertiary_window", patterns: /(^|[^a-z])1\s*mo|(^|[^a-z])1\s*m|month(ly)?/i },
 ];
+// Peer-verified numeric window_type codes (doubao-cli, corroborated by
+// TraeWorkAssistant/usageBar): 1 = 5-hour, 2 = 7-day, 3 = subscription total
+// (deliberately unmapped — not one of TokenTracker's three windows), 4 = month.
+const DOUBAO_WINDOW_TYPE_SLOTS = {
+  1: "primary_window",
+  2: "secondary_window",
+  4: "tertiary_window",
+};
+const DOUBAO_NUMERIC_WINDOW_TYPE_FIELDS = ["window_type", "windowType", "type"];
+const DOUBAO_EXHAUSTED_FIELDS = ["usage_exhausted", "usageExhausted"];
+const DOUBAO_LESS_THAN_ONE_PERCENT_FIELDS = ["less_than_one_percent", "lessThanOnePercent"];
 
 function finiteOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+// Quota amounts arrive as numbers or as display strings ("2,100", "<1").
+// "<x" bounds a sub-unit spend from above — taking the bound keeps a real
+// spend from reading as zero (usageBar's trade-off), never the reverse.
+function lenientNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return finiteOrNull(value);
+  let text = value.trim().replace(/[,\s]/g, "");
+  if (text.startsWith("<")) text = text.slice(1);
+  const number = Number(text);
+  return text !== "" && Number.isFinite(number) ? number : null;
 }
 
 function firstDefinedIn(object, fields) {
@@ -113,6 +142,16 @@ function clampPercent(value) {
 }
 
 function doubaoWindowSlot(group) {
+  // Numeric window_type wins when present (exact integers and numeric strings
+  // only — "1m"/"5h" must keep flowing through the pattern fallback below).
+  for (const field of DOUBAO_NUMERIC_WINDOW_TYPE_FIELDS) {
+    const value = group?.[field];
+    if (typeof value === "number" || (typeof value === "string" && /^\d+$/.test(value.trim()))) {
+      const slot = DOUBAO_WINDOW_TYPE_SLOTS[Number(value)];
+      if (slot) return slot;
+      break;
+    }
+  }
   const haystack = DOUBAO_WINDOW_KIND_FIELDS
     .map((field) => group?.[field])
     .filter((value) => typeof value === "string")
@@ -124,17 +163,17 @@ function doubaoWindowSlot(group) {
   return null;
 }
 
-// Lenient window parser: numbers when the group carries any, percentage from
-// used/total when possible, server-provided percent otherwise. A sub-1
-// percentage is treated as a fraction (×100) — the natural encoding for a
-// value below 1 from these APIs; a literal "1% used" reads as full only in the
-// unverified-schema case this branch exists for. Unrecognizable groups
-// degrade to null instead of an invented bar.
+// Lenient window parser: numbers (or display strings) when the group carries
+// any, percentage from used/total when possible, server-provided percent
+// otherwise. A sub-1 percentage is treated as a fraction (×100) — peer servers
+// send 0-100 integers with a separate less_than_one_percent flag, so the ×100
+// only ever fires for unknown shapes. Unrecognizable groups degrade to null
+// instead of an invented bar.
 function normalizeDoubaoWindowGroup(group) {
   if (!group || typeof group !== "object") return null;
-  const used = finiteOrNull(firstDefinedAcross(group, DOUBAO_USED_FIELDS));
-  const total = finiteOrNull(firstDefinedAcross(group, DOUBAO_TOTAL_FIELDS));
-  const remaining = finiteOrNull(firstDefinedAcross(group, DOUBAO_REMAINING_FIELDS));
+  const used = lenientNumber(firstDefinedAcross(group, DOUBAO_USED_FIELDS));
+  const total = lenientNumber(firstDefinedAcross(group, DOUBAO_TOTAL_FIELDS));
+  const remaining = lenientNumber(firstDefinedAcross(group, DOUBAO_REMAINING_FIELDS));
   let percent = finiteOrNull(firstDefinedAcross(group, DOUBAO_PERCENT_FIELDS));
   if (percent !== null && percent > 0 && percent < 1) percent *= 100;
 
@@ -144,27 +183,79 @@ function normalizeDoubaoWindowGroup(group) {
   } else {
     usedPercent = percent;
   }
+  // The server asserts exhaustion outright on spent windows (peer:
+  // ai-gateway) — mapping it to 100% is an observation, not an invention.
+  if (usedPercent === null && firstDefinedAcross(group, DOUBAO_EXHAUSTED_FIELDS) === true) {
+    usedPercent = 100;
+  }
   usedPercent = clampPercent(usedPercent);
   if (usedPercent === null && used === null && total === null && remaining === null) return null;
 
   const unit = firstDefinedAcross(group, DOUBAO_UNIT_FIELDS);
+  const lessThanOnePercent = firstDefinedAcross(group, DOUBAO_LESS_THAN_ONE_PERCENT_FIELDS) === true;
   return {
     used_percent: usedPercent ?? 0,
     reset_at: normalizeResetAt(firstDefinedAcross(group, DOUBAO_RESET_FIELDS)),
     ...(used !== null ? { used_credits: used } : {}),
     ...(total !== null ? { limit_credits: total } : {}),
     ...(remaining !== null ? { remaining_credits: remaining } : {}),
+    // Peer servers report sub-1% consumption via this flag, sometimes with a
+    // tiny upper-bound amount rather than a zero percent (usageBar/doubao-cli);
+    // pass the assertion through untouched so the data layer keeps it.
+    ...(lessThanOnePercent ? { less_than_one_percent: true } : {}),
     unit: typeof unit === "string" && unit.trim() ? unit.trim() : null,
   };
 }
 
-function normalizeDoubaoWindowGroups(groups) {
+// Paid quota/summary nests three levels — window_limit_section (object) →
+// window_limit_groups[] → window_limits[] — while usage_detail keeps its
+// groups flat and this parser's original fixtures pass windows directly.
+// collectDoubaoWindowItems accepts all three and flattens to window items,
+// carrying each entry's feature group ("general" is the personal-subscription
+// group per peer observations).
+function collectDoubaoWindowItems(section) {
+  const items = [];
+  const push = (entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const featureGroup = firstDefinedIn(entry, ["feature_group", "featureGroup", "feature_group_name", "featureGroupName"]);
+    const name = typeof featureGroup === "string" ? featureGroup : null;
+    if (Array.isArray(entry.window_limits)) {
+      for (const item of entry.window_limits) {
+        items.push({ item, featureGroup: name });
+      }
+      return;
+    }
+    items.push({ item: entry, featureGroup: name });
+  };
+  if (Array.isArray(section)) {
+    for (const entry of section) push(entry);
+  } else if (section && typeof section === "object") {
+    if (Array.isArray(section.window_limit_groups)) {
+      for (const group of section.window_limit_groups) push(group);
+    } else {
+      push(section);
+    }
+  }
+  return items;
+}
+
+function normalizeDoubaoWindowGroups(section) {
   const windows = { primary_window: null, secondary_window: null, tertiary_window: null };
-  if (!Array.isArray(groups)) return windows;
-  for (const group of groups) {
-    const slot = doubaoWindowSlot(group);
+  const entries = collectDoubaoWindowItems(section);
+  // Several feature groups can each carry a full window set; "general" is the
+  // personal-subscription one (usageBar: prefer it without refusing the
+  // others), so it sorts first and the first-wins scan below takes its
+  // windows for each slot.
+  const ordered = [...entries].sort(
+    (a, b) => (b.featureGroup === "general") - (a.featureGroup === "general"),
+  );
+  for (const { item } of ordered) {
+    const slot = doubaoWindowSlot(item);
     if (!slot || windows[slot]) continue;
-    const window = normalizeDoubaoWindowGroup(group);
+    // An active 5-hour exemption means the window is unlimited — no honest
+    // bar exists, so it degrades to a missing window (doubao-cli's reading).
+    if (item?.exemption?.active === true && slot === "primary_window") continue;
+    const window = normalizeDoubaoWindowGroup(item);
     if (window) windows[slot] = window;
   }
   return windows;
@@ -172,8 +263,17 @@ function normalizeDoubaoWindowGroups(groups) {
 
 function doubaoPlanLabelFromSummary(summaryData) {
   const display = summaryData?.current_subscription?.display;
-  const name = firstDefinedIn(display, ["product_name", "productName"]);
-  return typeof name === "string" && name.trim() ? name.trim() : null;
+  // Peer order: short_name, then product_name, then the top-level membership
+  // display name (ai-gateway/TraeWorkAssistant).
+  const name = [
+    display?.short_name,
+    display?.shortName,
+    display?.product_name,
+    display?.productName,
+    summaryData?.membership_display_name,
+    summaryData?.membershipDisplayName,
+  ].find((value) => typeof value === "string" && value.trim());
+  return name ? name.trim() : null;
 }
 
 function normalizeDoubaoLimits({ summaryData, usageData }) {

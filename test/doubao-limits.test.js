@@ -568,3 +568,126 @@ test("readDoubaoLimitsCache honors reset-based and unknown-reset TTLs", () => {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// Peer-verified paid-window schema (2026-10-31 recon: TraeWorkAssistant,
+// usageBar, doubao-cli, tokei). Fixtures below are reconstructed from those
+// implementations — not captured from a paid personal account yet.
+
+test("normalizeDoubaoWindowGroups lands peer-verified numeric window types", () => {
+  const windows = normalizeDoubaoWindowGroups({
+    window_limit_groups: [
+      {
+        feature_group: "general",
+        window_limits: [
+          { window_type: 1, used_percent: 17, end_time: 1799900000000 },
+          { window_type: 2, used_percent: 4 },
+          { window_type: 3, used_percent: 50 }, // subscription total: not one of TokenTracker's windows
+          { window_type: 4, used_percent: 9 },
+          { window_type: 99, used_percent: 1 },
+        ],
+      },
+    ],
+  });
+  assert.equal(windows.primary_window.used_percent, 17);
+  assert.equal(windows.primary_window.reset_at, new Date(1799900000000).toISOString());
+  assert.equal(windows.secondary_window.used_percent, 4);
+  assert.equal(windows.tertiary_window.used_percent, 9);
+
+  // String kinds keep flowing through the pattern fallback ("1m" is a label,
+  // not the numeric code 1).
+  const strings = normalizeDoubaoWindowGroups([{ window_type: "1m", used_quota: 1, total_quota: 10 }]);
+  assert.equal(strings.tertiary_window.used_credits, 1);
+});
+
+test("normalizeDoubaoLimits parses the peer-verified paid quota/summary shape", () => {
+  const paid = normalizeDoubaoLimits({
+    summaryData: {
+      current_subscription: { display: { short_name: "Pro" } },
+      window_limit_section: {
+        usage_exhausted: false,
+        window_limit_groups: [
+          {
+            feature_group: "general",
+            window_limits: [
+              { window_type: 1, used_percent: 17, used_amount: "357", total_amount: "2,100", end_time: 1799900000000 },
+              { window_type: 2, used_percent: 0, less_than_one_percent: true, used_amount: "<1", total_amount: "2,100" },
+              { window_type: 4, used_percent: 9, used_amount: "189", total_amount: "2,100" },
+            ],
+          },
+        ],
+      },
+    },
+    usageData: { window_limit_groups: [] },
+  });
+  assert.equal(paid.plan_label, "Pro");
+  // used/total wins over the coarse integer percent, matching the ratio.
+  assert.equal(paid.primary_window.used_percent, 17);
+  assert.equal(paid.primary_window.used_credits, 357);
+  assert.equal(paid.primary_window.limit_credits, 2100);
+  assert.equal(paid.primary_window.reset_at, new Date(1799900000000).toISOString());
+  // Sub-1% spend: the "<1" upper bound reads as 1 credit, and the server's
+  // flag rides along so the near-zero bar stays explainable.
+  assert.equal(paid.secondary_window.less_than_one_percent, true);
+  assert.equal(paid.secondary_window.used_credits, 1);
+  assert.equal(paid.tertiary_window.used_percent, 9);
+});
+
+test("normalizeDoubaoWindowGroup reads display-string amounts leniently", () => {
+  const thousands = normalizeDoubaoWindowGroup({ window_type: 2, used_amount: "1,234.5", total_amount: "2,100" });
+  assert.equal(thousands.used_credits, 1234.5);
+  assert.equal(thousands.limit_credits, 2100);
+  const bound = normalizeDoubaoWindowGroup({ window_type: 2, used_amount: "<0.01", total_amount: "500" });
+  assert.equal(bound.used_credits, 0.01);
+  assert.equal(
+    normalizeDoubaoWindowGroup({ window_type: 2, used_amount: "abc", total_amount: "100" }).used_credits,
+    undefined,
+  );
+});
+
+test("normalizeDoubaoWindowGroups prefers the general feature group", () => {
+  const windows = normalizeDoubaoWindowGroups([
+    { feature_group: "video", window_limits: [{ window_type: 1, used_percent: 80 }] },
+    { feature_group: "general", window_limits: [{ window_type: 1, used_percent: 20 }] },
+  ]);
+  assert.equal(windows.primary_window.used_percent, 20);
+});
+
+test("normalizeDoubaoWindowGroups drops exempt 5-hour windows", () => {
+  const windows = normalizeDoubaoWindowGroups([
+    { window_type: 1, exemption: { active: true }, used_percent: 0 },
+    { window_type: 2, used_percent: 30 },
+  ]);
+  assert.equal(windows.primary_window, null);
+  assert.equal(windows.secondary_window.used_percent, 30);
+});
+
+test("normalizeDoubaoWindowGroup maps usage_exhausted to a full bar", () => {
+  assert.equal(normalizeDoubaoWindowGroup({ window_type: 2, usage_exhausted: true }).used_percent, 100);
+});
+
+test("normalizeDoubaoWindowGroup carries the sub-one-percent flag through", () => {
+  const flagged = normalizeDoubaoWindowGroup({ window_type: 1, used_percent: 0, less_than_one_percent: true });
+  assert.equal(flagged.used_percent, 0);
+  assert.equal(flagged.less_than_one_percent, true);
+  assert.equal(normalizeDoubaoWindowGroup({ window_type: 1, used_percent: 40 }).less_than_one_percent, undefined);
+});
+
+test("doubao plan label falls back through short_name and membership_display_name", () => {
+  const section = {
+    window_limit_groups: [{ feature_group: "general", window_limits: [{ window_type: 1, used_percent: 1 }] }],
+  };
+  assert.equal(
+    normalizeDoubaoLimits({
+      summaryData: { current_subscription: { display: { short_name: "Pro" } }, window_limit_section: section },
+      usageData: {},
+    }).plan_label,
+    "Pro",
+  );
+  assert.equal(
+    normalizeDoubaoLimits({
+      summaryData: { current_subscription: { display: {} }, membership_display_name: "豆包 Pro", window_limit_section: section },
+      usageData: {},
+    }).plan_label,
+    "豆包 Pro",
+  );
+});
