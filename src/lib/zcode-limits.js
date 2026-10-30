@@ -798,10 +798,11 @@ function quotaTimestampToIso(value) {
 
 function findZcodeQuotaLimit(limits, type, unit, number = null) {
   if (!Array.isArray(limits)) return null;
+  const types = Array.isArray(type) ? type : [type];
   return (
     limits.find((limit) => {
       if (!limit || typeof limit !== "object") return false;
-      if (limit.type !== type) return false;
+      if (!types.includes(limit.type)) return false;
       if (zcodeValNumber(limit.unit) !== unit) return false;
       if (number == null) return true;
       return zcodeValNumber(limit.number) === number;
@@ -861,8 +862,10 @@ function normalizeZcodeCodingPlanQuotaResponse(body) {
   const limits = Array.isArray(data.limits) ? data.limits : [];
   // Match ZCode's own sidebar: TOKENS_LIMIT(unit=3,number=5)=5h,
   // TOKENS_LIMIT(unit=6)=weekly, TIME_LIMIT(unit=5,number=1)=tool calls.
-  const fiveHourLimit = findZcodeQuotaLimit(limits, "TOKENS_LIMIT", 3, 5);
-  const weeklyLimit = findZcodeQuotaLimit(limits, "TOKENS_LIMIT", 6);
+  // ZCode 3.17.1 renamed the token-window rows to CREDIT_LIMIT while keeping
+  // the unit/number convention, so both names anchor the named windows (#937).
+  const fiveHourLimit = findZcodeQuotaLimit(limits, ["TOKENS_LIMIT", "CREDIT_LIMIT"], 3, 5);
+  const weeklyLimit = findZcodeQuotaLimit(limits, ["TOKENS_LIMIT", "CREDIT_LIMIT"], 6);
   const toolsLimit = findZcodeQuotaLimit(limits, "TIME_LIMIT", 5, 1);
   const hasNamedWindows = Boolean(fiveHourLimit || weeklyLimit || toolsLimit);
 
@@ -998,12 +1001,15 @@ function zcodeLogFallbackResult(logRecord, errors = []) {
  * cannot be proven to belong to the signed-in login. Both extras are personal
  * to the current login. Any key carrying an account id (per-account
  * credentials, or config.json keys that byte-equal one) must match the login's
- * id. Once a login identity exists, an unprovable key (a config.json key no
- * account credential vouches for — e.g. left over from a switched account)
- * never merges its quota with this login's cards. When the login identity
- * itself is unreadable (user_info missing or unparseable) nothing can prove
- * the key belongs to the signed-in account either, so the extras are skipped
- * and only the main plan quota stays.
+ * id. In a per-account layout (credentials.json lists a coding-plan key for
+ * this family) an unproven config.json key may be a leftover from a switched
+ * account, so the extras stay fail-closed there. In a legacy layout without
+ * any per-account credential for the family, no other account is known to
+ * this ZCode home, so the config.json key cannot be attributed to a different
+ * login and rides with the login's extras (#937). When the login
+ * identity itself is unreadable (user_info missing or unparseable) nothing can
+ * prove the key belongs to the signed-in account either, so the extras are
+ * skipped and only the main plan quota stays.
  */
 function loadZcodeLoginScopedTokens(family, auth, { home, env } = {}) {
   if (loadZcodeActiveProvider({ home, env }) !== family) return null;
@@ -1011,7 +1017,11 @@ function loadZcodeLoginScopedTokens(family, auth, { home, env } = {}) {
   if (!loginAccountId) return null;
   if (auth.accountId) {
     if (auth.accountId !== loginAccountId) return null;
-  } else if (auth.auth_source === "credential:account-provider" || auth.auth_source === "provider:config") {
+  } else if (auth.auth_source === "credential:account-provider") {
+    return null;
+  } else if (auth.auth_source === "provider:config"
+    && Object.keys(loadZcodeAccountProviderAuths({ home, env }))
+      .some((providerKey) => zcodeProviderFamily(providerKey) === family)) {
     return null;
   }
   const zcodeToken = loadZcodeCredential("zcodejwttoken", { home, env });

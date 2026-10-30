@@ -84,7 +84,8 @@ function codingPlanQuotaBody() {
 
 // Real lite coding-plan payload from issue #279 (before/after model use).
 // percentage is already-used %; unit/number identify the window, not a token total.
-function realLiteCodingPlanQuotaBody({ fiveHourPercent = 14 } = {}) {
+// tokenRowType covers ZCode 3.17.1 renaming the rows to CREDIT_LIMIT (issue #937).
+function realLiteCodingPlanQuotaBody({ fiveHourPercent = 14, tokenRowType = "TOKENS_LIMIT" } = {}) {
   return {
     code: 200,
     msg: "Operation successful",
@@ -108,14 +109,14 @@ function realLiteCodingPlanQuotaBody({ fiveHourPercent = 14 } = {}) {
           ],
         },
         {
-          type: "TOKENS_LIMIT",
+          type: tokenRowType,
           unit: 3,
           number: 5,
           percentage: fiveHourPercent,
           nextResetTime: 1_783_540_151_760,
         },
         {
-          type: "TOKENS_LIMIT",
+          type: tokenRowType,
           unit: 6,
           number: 1,
           percentage: 43,
@@ -657,23 +658,68 @@ describe("ZCode login-scoped extras", () => {
     });
   });
 
-  it("withholds login-scoped extras for a config key no account credential vouches for", async () => {
+  it("rides login-scoped extras along with a legacy config key when no per-account credential exists", async () => {
+    // Issue #937: a pre-3.14 config.json key is the only key the layout ever
+    // had — with no per-account credential for the family it cannot belong to
+    // another login, so the login's extras must not be withheld from it.
     await withZcode314LoginHome(loginCredentials(), async (home, v2) => {
       fs.writeFileSync(path.join(v2, "config.json"), JSON.stringify({
-        provider: { "builtin:bigmodel-coding-plan": { enabled: true, options: { apiKey: "orphan-config-key" } } },
+        provider: { "builtin:bigmodel-coding-plan": { enabled: true, options: { apiKey: "legacy-config-key" } } },
       }));
-      const urls = [];
       const result = await fetchZcodeLimits({
         home, env: {},
         fetchImpl: async (url) => {
-          urls.push(url);
-          return { ok: true, async json() { return codingPlanQuotaBody(); } };
+          if (url.includes("/quota/limit")) {
+            return { ok: true, async json() { return codingPlanQuotaBody(); } };
+          }
+          if (url.endsWith("/reset/status")) {
+            return { ok: true, async json() { return resetBody(); } };
+          }
+          return { ok: true, async json() { return balanceBody(); } };
         },
       });
       assert.equal(result.error, null);
+      assert.equal(result.provider_key, "builtin:bigmodel-coding-plan");
+      assert.equal(result.reset_credits.five_hour.length, 1);
+      assert.equal(result.start_plan?.configured, true);
+      assert.equal(result.start_plan.plan_label, "Start");
+    });
+  });
+
+  it("still withholds login-scoped extras from an unproven config key in a per-account layout", async () => {
+    // A per-account credential exists for the family (a leftover from a
+    // switched account): the unvouched config key must not inherit the
+    // login's extras even when it is the only key that still serves quota.
+    await withZcode314LoginHome(loginCredentials({
+      [accountKeyName("bigmodel", STALE_ID)]: "stale-account-key",
+    }), async (home, v2) => {
+      fs.writeFileSync(path.join(v2, "config.json"), JSON.stringify({
+        provider: { "builtin:bigmodel-coding-plan": { enabled: true, options: { apiKey: "orphan-config-key" } } },
+      }));
+      const quotaKeys = [];
+      const result = await fetchZcodeLimits({
+        home, env: {},
+        fetchImpl: async (url, options) => {
+          if (url.includes("/quota/limit")) {
+            quotaKeys.push(options.headers.authorization);
+            if (options.headers.authorization === "stale-account-key") {
+              return { ok: false, status: 401 };
+            }
+            return { ok: true, async json() { return codingPlanQuotaBody(); } };
+          }
+          if (url.endsWith("/reset/status")) {
+            return { ok: true, async json() { return resetBody(); } };
+          }
+          return { ok: true, async json() { return balanceBody(); } };
+        },
+      });
+      assert.equal(result.error, null);
+      // The config layout never tries the per-account key itself (it exists
+      // only to prove ownership), so the orphan key alone serves quota.
+      assert.deepEqual(quotaKeys, ["orphan-config-key"]);
+      assert.equal(result.provider_key, "builtin:bigmodel-coding-plan");
       assert.equal(result.reset_credits, undefined);
       assert.equal(result.start_plan, undefined);
-      assert.deepEqual(urls, ["https://bigmodel.cn/api/monitor/usage/quota/limit"]);
     });
   });
 
@@ -1367,6 +1413,23 @@ describe("fetchZcodeLimits", () => {
     assert.equal(after.primary_window.used_percent, 18);
     assert.equal(after.secondary_window.used_percent, 43);
     assert.equal(after.tertiary_window.used_percent, 0);
+  });
+
+  it("anchors named windows when ZCode renames the token rows to CREDIT_LIMIT (issue #937)", () => {
+    // ZCode 3.17.1 kept unit/number but renamed TOKENS_LIMIT rows; without the
+    // alias the fixed 5h/Weekly/Tools labels would fall back to order luck.
+    const result = normalizeZcodeCodingPlanQuotaResponse(
+      realLiteCodingPlanQuotaBody({ fiveHourPercent: 14, tokenRowType: "CREDIT_LIMIT" }),
+    );
+    assert.deepEqual(
+      result.buckets.map((bucket) => bucket.show_name),
+      ["5h", "Weekly", "Tools"],
+    );
+    assert.deepEqual(result.primary_window, {
+      used_percent: 14,
+      reset_at: "2026-07-08T19:49:11.760Z",
+    });
+    assert.equal(result.secondary_window.used_percent, 43);
   });
 
   it("fetches and normalizes the issue #279 lite coding-plan shape end-to-end", async () => {
