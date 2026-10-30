@@ -2008,9 +2008,10 @@ describe("ZCode limits disk cache", () => {
   const okResponse = (body) => async () => ({ ok: true, status: 200, async json() { return body; } });
   const statusResponse = (status, body = {}) => async () => ({ ok: false, status, async json() { return body; } });
   const cachePath = (tmp) => path.join(tmp, ".tokentracker", "tracker", "zcode-usage-limits-cache.json");
-  // Stand-in for the credential fingerprint written by writeZcodeLimitsCache;
-  // fetchZcodeLimits-based tests derive the real one from their config's apiKey.
-  const CACHE_IDENTITY = "cache-fingerprint|";
+  // The identity fetchZcodeLimits computes when no login identity is readable
+  // (these fixtures carry no user_info credential); login-scoped tests use the
+  // real login id instead.
+  const CACHE_IDENTITY = zcodeCacheIdentity(null);
   const identityMap = (...keys) => new Map(keys.map((key) => [key, new Set([CACHE_IDENTITY])]));
 
   it("writes last-good windows to the disk cache on live success", async () => {
@@ -2162,10 +2163,10 @@ describe("ZCode limits disk cache", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-mixed-"));
     try {
       writeDualStartPlanConfig(tmp);
-      // Seed with the identities the live candidates will present, so the
-      // test exercises the real credential-scoped read path.
-      writeZcodeLimitsCache(seededLimits({ percent: 11 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: zcodeCacheIdentity({ apiKey: "bm-key" }) });
-      writeZcodeLimitsCache(seededLimits({ percent: 22 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan", identity: zcodeCacheIdentity({ apiKey: "zai-key" }) });
+      // Seed with the identity the candidates will present (no user_info
+      // fixture here, so both partitions resolve to the unreadable login).
+      writeZcodeLimitsCache(seededLimits({ percent: 11 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:bigmodel-start-plan", identity: CACHE_IDENTITY });
+      writeZcodeLimitsCache(seededLimits({ percent: 22 }), { home: tmp, nowMs: T0 - 60_000, providerKey: "builtin:zai-start-plan", identity: CACHE_IDENTITY });
       const seenKeys = [];
       const result = await fetchZcodeLimits({
         home: tmp,
@@ -2265,14 +2266,20 @@ describe("ZCode limits disk cache", () => {
   it("does not serve the previous login's cached windows after an account switch", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-zcode-cache-switch-"));
     try {
-      writeStartPlanConfig(tmp);
+      const v2 = writeStartPlanConfig(tmp);
+      const credentialsPath = path.join(v2, "credentials.json");
+      const writeLogin = (id) => fs.writeFileSync(
+        credentialsPath,
+        JSON.stringify({ "oauth:bigmodel:user_info": JSON.stringify({ id }) }),
+        "utf8",
+      );
+      writeLogin("login-a");
       await fetchZcodeLimits({ home: tmp, env: APP_ENV, nowMs: T0, fetchImpl: okResponse(futureBalanceBody()) });
-      // Same region × plan kind, new credential: the cached partition must not
-      // be inherited by the switched login.
-      const configPath = path.join(tmp, ".zcode", "v2", "config.json");
-      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      config.provider["builtin:bigmodel-start-plan"].options.apiKey = "switched-key";
-      fs.writeFileSync(configPath, JSON.stringify(config), "utf8");
+      const parsed = JSON.parse(fs.readFileSync(cachePath(tmp), "utf8"));
+      assert.equal(parsed["builtin:bigmodel-start-plan"].identity, "login-a|");
+      // Same region × plan kind, new login: the cached partition must not be
+      // inherited by the switched account.
+      writeLogin("login-b");
       const result = await fetchZcodeLimits({
         home: tmp,
         env: APP_ENV,

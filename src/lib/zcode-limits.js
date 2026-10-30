@@ -1012,15 +1012,16 @@ function zcodeLogFallbackResult(logRecord, errors = []) {
 // (region × plan kind) so one region's billing read never falls back to
 // another region's data (#938's ownership principle).
 
-// Cache partitions are also scoped to the credential that produced the
-// windows: two logins on the same region × plan kind share one providerKey,
-// so an account switch followed by a live failure would otherwise serve the
-// previous login's bars. The identity is a non-reversible SHA-256 prefix of
-// the API key plus the applicable team scope (coding-plan quota is
-// team-scoped); no secret material is persisted.
-function zcodeCacheIdentity(auth = {}) {
-  const fingerprint = crypto.createHash("sha256").update(String(auth.apiKey || "")).digest("hex").slice(0, 32);
-  return `${fingerprint}|${typeof auth.teamContext === "string" ? auth.teamContext : ""}`;
+// Cache partitions are also scoped to the login that produced the windows:
+// two logins on the same region × plan kind share one providerKey, so an
+// account switch followed by a live failure would otherwise serve the
+// previous login's bars. The login id comes from the app's own user_info —
+// the same ownership source as login-scoped tokens — plus the applicable
+// team scope for team-scoped coding-plan quota. No secret material is
+// persisted, and an unreadable login ("unknown") matches only itself.
+function zcodeCacheIdentity(loginAccountId, teamContext) {
+  const login = typeof loginAccountId === "string" && loginAccountId.trim() ? loginAccountId.trim() : "unknown";
+  return `${login}|${typeof teamContext === "string" ? teamContext : ""}`;
 }
 
 function zcodeLimitsCachePath({ home } = {}) {
@@ -1172,6 +1173,15 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
   const errors = [];
   const partitionFailures = [];
   let emptySuccess = null;
+  // The current login per region, resolved once: cache partitions are keyed
+  // to it so an account switch cannot inherit the previous login's windows.
+  const loginIdByFamily = new Map();
+  const loginIdFor = (family) => {
+    if (!loginIdByFamily.has(family)) {
+      loginIdByFamily.set(family, loadZcodeLoginAccountId(family, { home, env }));
+    }
+    return loginIdByFamily.get(family);
+  };
   for (const auth of authCandidates) {
     try {
       const body = auth.planKind === "coding-plan"
@@ -1208,7 +1218,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
         home,
         nowMs,
         providerKey: auth.providerKey,
-        identity: zcodeCacheIdentity(auth),
+        identity: zcodeCacheIdentity(loginIdFor(zcodeProviderFamily(auth.providerKey)), auth.teamContext),
       });
       if (Array.isArray(normalized.buckets) && normalized.buckets.length === 0 && authCandidates.length > 1) {
         emptySuccess = emptySuccess || result;
@@ -1301,13 +1311,13 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     return zcodeLogFallbackResult(logFallback, errors);
   }
   // Last stop before the error result: serve the disk cache in live candidate
-  // priority order, scoped to the credential identity that produced the
-  // windows so an account switch cannot inherit the previous login's bars.
+  // priority order, scoped to the login that produced the windows so an
+  // account switch cannot inherit the previous login's bars.
   const identityByKey = new Map();
   for (const auth of authCandidates) {
     if (!cacheEligible.includes(auth.providerKey)) continue;
     if (!identityByKey.has(auth.providerKey)) identityByKey.set(auth.providerKey, new Set());
-    identityByKey.get(auth.providerKey).add(zcodeCacheIdentity(auth));
+    identityByKey.get(auth.providerKey).add(zcodeCacheIdentity(loginIdFor(zcodeProviderFamily(auth.providerKey)), auth.teamContext));
   }
   const cached = readZcodeLimitsCache({ home, nowMs, providerKeys: cacheEligible, identityByKey });
   if (cached) return cached;
