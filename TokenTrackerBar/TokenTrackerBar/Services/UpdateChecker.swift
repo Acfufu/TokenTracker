@@ -98,6 +98,11 @@ final class UpdateChecker {
     private func handleResult(_ result: Result<GitHubRelease, Error>, silent: Bool) {
         switch result {
         case .success(let release):
+            // The API may have been throttled even though the releases-page
+            // fallback succeeded. promptUpdate/finishUpdate clear statusText,
+            // so reapply the cooldown status unless the download progress
+            // owns the channel (issue #945).
+            let rateLimited = releaseClient.isAPICoolingDown
             let current = currentVersion()
             if compareVersions(current, release.tagVersion) == .orderedAscending {
                 if silent, let dmg = release.dmgAsset {
@@ -116,9 +121,15 @@ final class UpdateChecker {
                     startDownloadAndInstall(dmg, targetVersion: release.tagVersion, interactive: false)
                 } else {
                     promptUpdate(release: release, currentVersion: current)
+                    if rateLimited {
+                        statusText = Strings.updateRateLimitedStatus
+                    }
                 }
             } else {
                 finishUpdate()
+                if rateLimited {
+                    statusText = Strings.updateRateLimitedStatus
+                }
                 if !silent {
                     showAlert(title: Strings.upToDateTitle, message: Strings.upToDateMessage(current), style: .informational)
                 }
@@ -579,10 +590,12 @@ final class UpdateChecker {
         var count = 0
     }
 
-    /// "Retry after" line for alerts, localized per the user's current locale
+    /// "Retry after" line for alerts, formatted in the app's resolved locale so
+    /// the date matches the surrounding alert text
     /// (mirrors Windows' ApiRetryAtMessage).
     private static func retryTimeText(_ date: Date) -> String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: NativeLocalization.currentResolvedLocale)
         formatter.dateStyle = .short
         formatter.timeStyle = .short
         return formatter.string(from: date)
