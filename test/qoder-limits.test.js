@@ -29,6 +29,8 @@ function writeQoderDesktopMainLog(home, bundleId, session, {
   used = 0,
   total = 100,
   observedAt = new Date().toISOString(),
+  addOn = null,
+  quotaExceeded = false,
 } = {}) {
   const file = path.join(
     home,
@@ -50,7 +52,7 @@ function writeQoderDesktopMainLog(home, bundleId, session, {
       usageType: "credits",
       expiresAt: 253_402_214_400_000,
       totalUsagePercentage: percentage,
-      isQuotaExceeded: false,
+      isQuotaExceeded: quotaExceeded,
       userQuota: {
         total,
         used,
@@ -58,6 +60,13 @@ function writeQoderDesktopMainLog(home, bundleId, session, {
         percentage,
         unit: "credits",
       },
+      ...(addOn ? {
+        addOnQuota: {
+          ...addOn,
+          percentage: addOn.total > 0 ? (addOn.used / addOn.total) * 100 : 0,
+          unit: "credits",
+        },
+      } : {}),
     },
   };
   fs.writeFileSync(file, `[${observedAt}] [INFO] [main] [Auth] [AccountUsage] usage summary ${JSON.stringify(summary)}\n`);
@@ -94,7 +103,7 @@ test("normalizeQoderUsageResponse merges camel-case base and shared quotas", () 
   assert.equal(result.primary_window.reset_at, "2026-08-01T00:00:00.000Z");
 });
 
-test("normalizeQoderUsageResponse accepts snake case and exhausted zero quota", () => {
+test("normalizeQoderUsageResponse accepts snake case and renders an empty zero quota at 0%", () => {
   const result = normalizeQoderUsageResponse({
     total_quota: {
       quota_summary: {
@@ -106,7 +115,7 @@ test("normalizeQoderUsageResponse accepts snake case and exhausted zero quota", 
     },
     next_reset_at: 1_785_542_400_000,
   });
-  assert.equal(result.primary_window.used_percent, 100);
+  assert.equal(result.primary_window.used_percent, 0);
   assert.equal(result.primary_window.reset_at, "2026-08-01T00:00:00.000Z");
 });
 
@@ -948,6 +957,355 @@ test("fetchQoderLimits returns last-good before explicit provider fallback", asy
   assert.equal(cached.source, "disk-cache");
   assert.equal(cached.secondary_window.remaining_credits, 300);
   assert.equal(providerFetches, 0);
+});
+
+test("fetchQoderLimits lets a newer desktop summary beat the last-good cache", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-log-beats-cache-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  writeQoderLimitsCache({
+    configured: true,
+    error: null,
+    plan_label: "personal_standard",
+    primary_window: {
+      used_percent: 0, reset_at: null, used_credits: 0, limit_credits: 0, remaining_credits: 0, unit: "credits",
+    },
+    tertiary_window: {
+      used_percent: 0, reset_at: null, used_credits: 0, limit_credits: 1000, remaining_credits: 1000, unit: "credits",
+    },
+  }, { home, nowMs: nowMs - 6 * 3600_000 });
+
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "fresh-session", {
+    used: 0,
+    total: 0,
+    observedAt: new Date(nowMs - 60_000).toISOString(),
+    addOn: { total: 1100, used: 0, remaining: 1100 },
+  });
+  fs.utimesSync(file, new Date(nowMs - 30_000), new Date(nowMs - 30_000));
+
+  const limits = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+
+  assert.equal(limits.source, "local-log");
+  assert.equal(limits.tertiary_window.limit_credits, 1100);
+  const refreshed = readQoderLimitsCache({ home, nowMs });
+  assert.equal(refreshed.tertiary_window.limit_credits, 1100);
+});
+
+test("fetchQoderLimits keeps the last-good cache over an older desktop summary", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-cache-beats-log-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  writeQoderLimitsCache({
+    configured: true,
+    error: null,
+    plan_label: "personal_standard",
+    primary_window: {
+      used_percent: 25, reset_at: null, used_credits: 25, limit_credits: 100, remaining_credits: 75, unit: "credits",
+    },
+    tertiary_window: {
+      used_percent: 10, reset_at: null, used_credits: 123, limit_credits: 1234, remaining_credits: 1111, unit: "credits",
+    },
+  }, { home, nowMs: nowMs - 60_000 });
+
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "stale-session", {
+    used: 0,
+    total: 0,
+    observedAt: new Date(nowMs - 6 * 3600_000).toISOString(),
+    addOn: { total: 1100, used: 0, remaining: 1100 },
+  });
+  fs.utimesSync(file, new Date(nowMs - 6 * 3600_000), new Date(nowMs - 6 * 3600_000));
+
+  const limits = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+
+  assert.equal(limits.source, "disk-cache");
+  assert.equal(limits.tertiary_window.limit_credits, 1234);
+});
+
+test("fetchQoderLimits does not let a fresh mtime resurrect an untimestamped summary over the cache", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-mtime-trap-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  writeQoderLimitsCache({
+    configured: true,
+    error: null,
+    plan_label: "personal_standard",
+    primary_window: {
+      used_percent: 25, reset_at: null, used_credits: 25, limit_credits: 100, remaining_credits: 75, unit: "credits",
+    },
+    tertiary_window: {
+      used_percent: 10, reset_at: null, used_credits: 123, limit_credits: 1234, remaining_credits: 1111, unit: "credits",
+    },
+  }, { home, nowMs: nowMs - 60_000 });
+
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "untimestamped-session", {
+    used: 0,
+    total: 0,
+    observedAt: "not-a-timestamp",
+    addOn: { total: 1100, used: 0, remaining: 1100 },
+  });
+  fs.utimesSync(file, new Date(nowMs - 30_000), new Date(nowMs - 30_000));
+
+  const limits = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+
+  assert.equal(limits.source, "disk-cache");
+  assert.equal(limits.tertiary_window.limit_credits, 1234);
+});
+
+test("fetchQoderLimits keeps scanning when the newest log cannot beat the cache", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-scan-past-stale-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  writeQoderLimitsCache({
+    configured: true,
+    error: null,
+    plan_label: "personal_standard",
+    primary_window: {
+      used_percent: 25, reset_at: null, used_credits: 25, limit_credits: 100, remaining_credits: 75, unit: "credits",
+    },
+    tertiary_window: {
+      used_percent: 10, reset_at: null, used_credits: 123, limit_credits: 1234, remaining_credits: 1111, unit: "credits",
+    },
+  }, { home, nowMs: nowMs - 2 * 3600_000 });
+
+  // Newest mtime, but its summary line predates the cache snapshot.
+  const staleFile = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "stale-line-session", {
+    used: 0,
+    total: 0,
+    observedAt: new Date(nowMs - 3 * 3600_000).toISOString(),
+    addOn: { total: 1100, used: 0, remaining: 1100 },
+  });
+  fs.utimesSync(staleFile, new Date(nowMs - 10 * 60_000), new Date(nowMs - 10 * 60_000));
+  // Older mtime, yet its summary line is newer than the cache.
+  const freshFile = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "fresh-line-session", {
+    used: 40,
+    total: 100,
+    observedAt: new Date(nowMs - 100 * 60_000).toISOString(),
+    addOn: { total: 1300, used: 0, remaining: 1300 },
+  });
+  fs.utimesSync(freshFile, new Date(nowMs - 95 * 60_000), new Date(nowMs - 95 * 60_000));
+
+  const limits = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+
+  assert.equal(limits.source, "local-log");
+  assert.equal(limits.tertiary_window.limit_credits, 1300);
+  const refreshed = readQoderLimitsCache({ home, nowMs });
+  assert.equal(refreshed.tertiary_window.limit_credits, 1300);
+});
+
+test("fetchQoderLimits picks the newest summary when mtime and line order disagree", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-newest-line-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  writeQoderLimitsCache({
+    configured: true,
+    error: null,
+    plan_label: "personal_standard",
+    primary_window: {
+      used_percent: 25, reset_at: null, used_credits: 25, limit_credits: 100, remaining_credits: 75, unit: "credits",
+    },
+    tertiary_window: {
+      used_percent: 10, reset_at: null, used_credits: 123, limit_credits: 1234, remaining_credits: 1111, unit: "credits",
+    },
+  }, { home, nowMs: nowMs - 3600_000 });
+
+  // Touched most recently, yet carries the older summary line (11:20).
+  const lateMtime = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "late-mtime-session", {
+    used: 10,
+    total: 100,
+    observedAt: new Date(nowMs - 40 * 60_000).toISOString(),
+    addOn: { total: 1100, used: 0, remaining: 1100 },
+  });
+  fs.utimesSync(lateMtime, new Date(nowMs - 60_000), new Date(nowMs - 60_000));
+  // Touched a minute earlier, with the newer summary line (11:50).
+  const earlyMtime = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "early-mtime-session", {
+    used: 0,
+    total: 0,
+    observedAt: new Date(nowMs - 10 * 60_000).toISOString(),
+    addOn: { total: 1300, used: 0, remaining: 1300 },
+  });
+  fs.utimesSync(earlyMtime, new Date(nowMs - 2 * 60_000), new Date(nowMs - 2 * 60_000));
+
+  const limits = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+
+  assert.equal(limits.source, "local-log");
+  assert.equal(limits.tertiary_window.limit_credits, 1300);
+  assert.equal(limits.primary_window.limit_credits, 0);
+
+  // The cache snapshot advanced past both files, so the next fetch reads it
+  // — and it must hold the newest summary, not the first-eligible one.
+  const second = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: {},
+    nowMs: nowMs + 60_000,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+  });
+  assert.equal(second.source, "disk-cache");
+  assert.equal(second.tertiary_window.limit_credits, 1300);
+});
+
+test("fetchQoderLimits prefers a configured manual cookie over a local summary when no cache exists", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-cookie-first-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "log-session", {
+    used: 40,
+    total: 100,
+    observedAt: new Date(nowMs - 60_000).toISOString(),
+  });
+  fs.utimesSync(file, new Date(nowMs - 30_000), new Date(nowMs - 30_000));
+
+  let providerFetches = 0;
+  const result = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: { QODER_COOKIE: "session=manual-secret" },
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+    fetchImpl: async () => {
+      providerFetches += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            totalQuota: {
+              quotaSummary: {
+                usedValue: 25,
+                limitValue: 100,
+                remainingValue: 75,
+                usagePercentage: 25,
+              },
+            },
+          };
+        },
+      };
+    },
+  });
+
+  assert.equal(providerFetches, 1);
+  assert.equal(result.cookie_source, "QODER_COOKIE");
+  assert.equal(result.primary_window.remaining_credits, 75);
+});
+
+test("fetchQoderLimits merges the desktop quota-exceeded flag into a live zero plan", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-zero-merge-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "exceeded-session", {
+    used: 0,
+    total: 0,
+    observedAt: new Date(nowMs - 60_000).toISOString(),
+    quotaExceeded: true,
+  });
+  fs.utimesSync(file, new Date(nowMs - 30_000), new Date(nowMs - 30_000));
+
+  const result = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: { QODER_COOKIE: "session=manual-secret" },
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          totalQuota: {
+            quotaSummary: {
+              usedValue: 0,
+              limitValue: 0,
+              remainingValue: 0,
+              usagePercentage: 0,
+            },
+          },
+        };
+      },
+    }),
+  });
+
+  assert.equal(result.source, "provider-api+local-log");
+  assert.equal(result.quota_exceeded, true);
+  assert.equal(result.plan_label, "personal_standard");
+  assert.equal(result.primary_window.reset_at, null);
+  assert.equal(result.primary_window.used_percent, 0);
+});
+
+test("fetchQoderLimits falls back to the local summary when the manual cookie fails", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-cookie-fallback-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const nowMs = Date.parse("2030-07-29T12:00:00.000Z");
+  const file = writeQoderDesktopMainLog(home, "com.qoder.app.stable", "log-session", {
+    used: 40,
+    total: 100,
+    observedAt: new Date(nowMs - 60_000).toISOString(),
+  });
+  fs.utimesSync(file, new Date(nowMs - 30_000), new Date(nowMs - 30_000));
+
+  let providerFetches = 0;
+  const result = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: { QODER_COOKIE: "session=manual-secret" },
+    nowMs,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+    fetchImpl: async () => {
+      providerFetches += 1;
+      throw new Error("Provider request failed.");
+    },
+  });
+
+  assert.equal(providerFetches, 1);
+  assert.equal(result.source, "local-log");
+  assert.equal(result.primary_window.remaining_credits, 60);
 });
 
 test("fetchQoderLimits does not probe the macOS browser Keychain by default", async (t) => {
