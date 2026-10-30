@@ -10,6 +10,10 @@ const DEFAULT_BIGMODEL_MONITOR_BASE_URL = "https://bigmodel.cn";
 const ZCODE_MONITOR_QUOTA_PATH = "/api/monitor/usage/quota/limit";
 const DEFAULT_ZCODE_APP_VERSION = "3.2.5";
 const DEFAULT_ZCODE_LOG_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const ZCODE_LIMITS_CACHE_FILE = "zcode-usage-limits-cache.json";
+// Windows without a usable reset_at cannot be checked against a quota rollover,
+// so they are only served while the snapshot is young enough to trust.
+const ZCODE_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS = 12 * 60 * 60 * 1000;
 
 function resolveZcodeHome({ home, env = process.env } = {}) {
   if (typeof env.TOKENTRACKER_ZCODE_HOME === "string" && env.TOKENTRACKER_ZCODE_HOME.trim()) {
@@ -692,7 +696,10 @@ async function fetchZcodeBilling(apiKey, { fetchImpl = fetch, baseUrl, env, home
     signal,
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error("Not authenticated with ZCode. Run `zcode` in Terminal to log in.");
+    const error = new Error("Not authenticated with ZCode. Run `zcode` in Terminal to log in.");
+    // Tagged so the failure chain surfaces re-login instead of stale cache bars.
+    error.authError = true;
+    throw error;
   }
   if (!res.ok) {
     let detail = "";
@@ -770,7 +777,10 @@ async function fetchZcodeCodingPlanQuota(apiKey, { fetchImpl = fetch, quotaUrl, 
     headers,
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error("Not authenticated with ZCode coding plan. Run `zcode` in Terminal to log in.");
+    const error = new Error("Not authenticated with ZCode coding plan. Run `zcode` in Terminal to log in.");
+    // Tagged so the failure chain surfaces re-login instead of stale cache bars.
+    error.authError = true;
+    throw error;
   }
   let body = null;
   try {
@@ -988,9 +998,115 @@ function zcodeLogFallbackResult(logRecord, errors = []) {
     source: "zcode-log",
     provider_key: logRecord.providerKey,
     log_timestamp: logRecord.log_timestamp,
+    // The log line's age IS the data age: ZCode wrote it when it last fetched.
+    cached_at: logRecord.log_timestamp,
+    stale: true,
     provider_errors: errors,
     ...normalizeZcodeBalanceResponse(logRecord.body),
   };
+}
+
+// Last-good disk cache for ZCode quota windows, following the house pattern
+// (codex / ark / qoder): write on every live success, serve stale bars when the
+// live chain fails. One file, partitioned per built-in provider key
+// (region × plan kind) so one region's billing read never falls back to
+// another region's data (#938's ownership principle).
+
+function zcodeLimitsCachePath({ home } = {}) {
+  return path.join(home || os.homedir(), ".tokentracker", "tracker", ZCODE_LIMITS_CACHE_FILE);
+}
+
+// A window whose reset_at has already passed is stale data, not a usable
+// fallback — the quota has rolled over, so drop it. Undated windows cannot be
+// checked against a reset and are bounded by the snapshot-age TTL instead.
+function zcodeCachedWindow(window, { cachedAtMs, nowMs } = {}) {
+  if (!window || typeof window !== "object") return null;
+  const resetAtMs = Date.parse(window.reset_at || "");
+  if (Number.isFinite(resetAtMs)) return resetAtMs > nowMs ? window : null;
+  return nowMs - cachedAtMs <= ZCODE_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS ? window : null;
+}
+
+function zcodeCachedBucket(bucket, { cachedAtMs, nowMs } = {}) {
+  if (!bucket || typeof bucket !== "object") return null;
+  if (!bucket.window || typeof bucket.window !== "object") {
+    return nowMs - cachedAtMs <= ZCODE_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS ? bucket : null;
+  }
+  const window = zcodeCachedWindow(bucket.window, { cachedAtMs, nowMs });
+  return window ? { ...bucket, window } : null;
+}
+
+/**
+ * Read the last-good windows for the first provider key with a usable cache
+ * entry. `providerKeys` arrives in live candidate priority order; keys whose
+ * live attempts all ended in auth errors are withheld by the caller.
+ */
+function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [] } = {}) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(zcodeLimitsCachePath({ home }), "utf8"));
+  } catch (_error) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  for (const providerKey of providerKeys) {
+    const raw = parsed[providerKey];
+    if (!raw || typeof raw !== "object") continue;
+    const cachedAtMs = Date.parse(raw.cached_at || "");
+    if (!Number.isFinite(cachedAtMs) || cachedAtMs > nowMs + 60_000) continue;
+    const context = { cachedAtMs, nowMs };
+    const buckets = (Array.isArray(raw.buckets) ? raw.buckets : [])
+      .map((bucket) => zcodeCachedBucket(bucket, context))
+      .filter(Boolean);
+    const primaryWindow = zcodeCachedWindow(raw.primary_window, context);
+    const secondaryWindow = zcodeCachedWindow(raw.secondary_window, context);
+    const tertiaryWindow = zcodeCachedWindow(raw.tertiary_window, context);
+    if (!primaryWindow && !secondaryWindow && !tertiaryWindow && !buckets.length) continue;
+    return {
+      configured: true,
+      error: null,
+      provider_key: providerKey,
+      plan_kind: typeof raw.plan_kind === "string" ? raw.plan_kind : null,
+      plan_id: typeof raw.plan_id === "string" ? raw.plan_id : null,
+      plan_label: typeof raw.plan_label === "string" ? raw.plan_label : null,
+      buckets,
+      primary_window: primaryWindow,
+      secondary_window: secondaryWindow,
+      tertiary_window: tertiaryWindow,
+      cached: true,
+      stale: true,
+      cached_at: raw.cached_at,
+      source: "disk-cache",
+    };
+  }
+  return null;
+}
+
+/** Merge one provider partition into the disk cache; best-effort, never throws. */
+function writeZcodeLimitsCache(limits, { home, nowMs = Date.now(), providerKey } = {}) {
+  if (!providerKey || !limits?.configured || limits.error) return;
+  if (!limits.primary_window && !limits.secondary_window && !limits.tertiary_window) return;
+  const cachePath = zcodeLimitsCachePath({ home });
+  let payload = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    if (parsed && typeof parsed === "object") payload = parsed;
+  } catch (_error) {}
+  payload[providerKey] = {
+    plan_kind: typeof limits.plan_kind === "string" ? limits.plan_kind : null,
+    plan_id: typeof limits.plan_id === "string" ? limits.plan_id : null,
+    plan_label: typeof limits.plan_label === "string" ? limits.plan_label : null,
+    buckets: Array.isArray(limits.buckets) ? limits.buckets : [],
+    primary_window: limits.primary_window || null,
+    secondary_window: limits.secondary_window || null,
+    tertiary_window: limits.tertiary_window || null,
+    cached_at: new Date(nowMs).toISOString(),
+  };
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    const tmpPath = `${cachePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tmpPath, cachePath);
+  } catch (_error) {}
 }
 
 /**
@@ -1021,8 +1137,9 @@ function loadZcodeLoginScopedTokens(family, auth, { home, env } = {}) {
 }
 
 /**
- * Return normalized quota windows, trying eligible providers and recent billing logs.
- * Credentials and internal team routing identifiers are omitted from the result.
+ * Return normalized quota windows, trying eligible providers, recent billing
+ * logs, and finally the last-good disk cache. Credentials and internal team
+ * routing identifiers are omitted from the result.
  */
 async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now(), providerTimeoutMs } = {}) {
   const startedAt = Date.now();
@@ -1036,6 +1153,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     return { configured: false };
   }
   const errors = [];
+  const partitionFailures = [];
   let emptySuccess = null;
   for (const auth of authCandidates) {
     try {
@@ -1066,6 +1184,10 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
         provider_key: auth.providerKey,
         ...normalized,
       };
+      // Last-good disk cache (house pattern: codex / ark / qoder): persist the
+      // windows so a later network failure serves stale bars instead of a
+      // vanished card. Login-scoped extras stay live-only.
+      writeZcodeLimitsCache(result, { home, nowMs, providerKey: auth.providerKey });
       if (Array.isArray(normalized.buckets) && normalized.buckets.length === 0 && authCandidates.length > 1) {
         emptySuccess = emptySuccess || result;
         continue;
@@ -1129,6 +1251,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
       return result;
     } catch (error) {
       errors.push(`${auth.providerKey}: ${error?.message || "Unknown error"}`);
+      partitionFailures.push({ providerKey: auth.providerKey, authError: error?.authError === true });
     }
   }
   if (emptySuccess) return emptySuccess;
@@ -1140,6 +1263,18 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     requireProviderMatch: authCandidates.some((auth) => auth.planKind === "coding-plan"),
   });
   if (logFallback) return zcodeLogFallbackResult(logFallback, errors);
+  // Last stop before the error result: serve the disk cache in live candidate
+  // priority order. A partition whose attempts all ended in auth errors keeps
+  // its error surfaced — re-login is actionable and must not be masked by
+  // stale bars (opencode-go auth_error / codex reauth precedent).
+  const cacheOrder = [];
+  for (const auth of authCandidates) {
+    if (!cacheOrder.includes(auth.providerKey)) cacheOrder.push(auth.providerKey);
+  }
+  const cacheEligible = cacheOrder.filter((providerKey) =>
+    partitionFailures.some((failure) => failure.providerKey === providerKey && !failure.authError));
+  const cached = readZcodeLimitsCache({ home, nowMs, providerKeys: cacheEligible });
+  if (cached) return cached;
   return {
     configured: true,
     error: errors[0] || "Unknown error",
@@ -1168,5 +1303,7 @@ module.exports = {
   fetchZcodeBilling,
   fetchZcodeCodingPlanQuota,
   fetchZcodeStartPlanGrants,
+  readZcodeLimitsCache,
+  writeZcodeLimitsCache,
   fetchZcodeLimits,
 };
