@@ -61,3 +61,31 @@ test("existing attribution policy is unchanged when observed mode is not enabled
     assert.deepEqual(await rows(queuePath), { "model-a": 30 });
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test("switching a previously aligned group to observed retracts the stale dominant row once", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tt-observed-transition-"));
+  try {
+    const file = path.join(dir, "rollout-2026-07-01T00-00-00-33333333-3333-4333-8333-333333333333.jsonl");
+    const queuePath = path.join(dir, "queue.jsonl");
+    await fs.writeFile(file, [event(1, 10, 10), context("model-b"), event(2, 20, 30)].map(line).join(""));
+    const cursors = { hourly: { version: 3, buckets: {}, groupQueued: {} } };
+    await parseRolloutIncremental({ rolloutFiles: [file], cursors, queuePath });
+    assert.deepEqual(await rows(queuePath), { "model-b": 30 });
+    // Simulate the alignment state a default-policy group can persist (every-code
+    // aligns its unknown bucket to the nearest codex dominant): the unknown tokens
+    // were emitted under model-a, which has no bucket of its own in this group.
+    const unknownKey = Object.keys(cursors.hourly.buckets).find(key => key.split("|")[1] === "unknown");
+    cursors.hourly.buckets[unknownKey].alignedModel = "model-a";
+    cursors.hourly.modelAttributionPolicy = { codex: "observed" };
+    await fs.appendFile(file, [context("model-b"), event(3, 30, 60)].map(line).join(""));
+    await parseRolloutIncremental({ rolloutFiles: [file], cursors, queuePath });
+    // The stale model-a row is zeroed, unknown reclaims its tokens, model-b is
+    // re-emitted with its own accumulated totals (20 + the new 30), keeping the
+    // session total at 60.
+    assert.deepEqual(await rows(queuePath), { "model-a": 0, "model-b": 50, unknown: 10 });
+    assert.equal(cursors.hourly.buckets[unknownKey].alignedModel, null);
+    const corrected = await fs.readFile(queuePath, "utf8");
+    await parseRolloutIncremental({ rolloutFiles: [file], cursors, queuePath });
+    assert.equal(await fs.readFile(queuePath, "utf8"), corrected);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});

@@ -34,6 +34,7 @@ const { readCodexServiceTier, isPriorityServiceTier, isUltrafastServiceTier } = 
 const {
   createUsageRecordState,
   extractTokenUsageRecord,
+  isCodexTotalOnlyResetSentinel,
   noteLineAfterUsageRecord,
   noteTokenCount,
   noteUsageRecord,
@@ -72,17 +73,10 @@ const CODEX_RESUME_INVALIDATED = "TOKENTRACKER_CODEX_RESUME_INVALIDATED";
 // input (including cache), not the accumulated session or day totals.
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
-// Session token summaries use the same fork-prefix and reset-sentinel rules
-// as rollout.js. Context/performance callers retain their existing event view.
+// Session token summaries use the same fork-prefix rules as rollout.js; the
+// reset-sentinel predicate is shared verbatim from codex-usage-record.js.
+// Context/performance callers retain their existing event view.
 const LEDGER_FORK_REPLAY_GAP_MS = 500;
-function isLedgerResetSentinel(last, total) {
-  const components = usage => [usage?.input_tokens, usage?.cached_input_tokens,
-    usage?.cache_creation_input_tokens ?? usage?.cache_write_input_tokens,
-    usage?.output_tokens, usage?.reasoning_output_tokens]
-    .reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
-  return Number(last?.total_tokens || 0) > 0 && Number(total?.total_tokens || 0) === 0
-    && components(last) === 0 && components(total) === 0;
-}
 
 // ---------------------------------------------------------------------------
 // Timezone helpers
@@ -652,9 +646,11 @@ async function parseCodexRolloutFile(filePath, {
   let cliVersion = isResuming ? resumeState.cliVersion || null : null;
   let forkedFromId = isResuming ? resumeState.forkedFromId || null : null;
   const ledgerRolloutDate = path.basename(primaryFilePath).match(/^rollout-(\d{4}-\d{2}-\d{2})T/)?.[1] || null;
-  let ledgerCurrentDate = isResuming ? resumeState.ledgerReplayState?.currentDate || null : null;
-  let ledgerReplayActive = isResuming ? Boolean(resumeState.ledgerReplayState?.active) : initialOffset === 0;
-  let ledgerPreviousTokenMs = isResuming ? resumeState.ledgerReplayState?.previousTokenMs ?? null : null;
+  let ledgerCurrentDate = null;
+  // Same gating as rollout.js: the replay prefix only ever sits at the head of
+  // a freshly-forked file, so only a scan from offset 0 can see it.
+  let ledgerReplayActive = initialOffset === 0;
+  let ledgerPreviousTokenMs = null;
   let parentThreadId = isResuming ? resumeState.parentThreadId || null : null;
   let threadSource = isResuming ? resumeState.threadSource || null : null;
   let agentNickname = isResuming ? resumeState.agentNickname || null : null;
@@ -1167,7 +1163,7 @@ async function parseCodexRolloutFile(filePath, {
         );
       }
       const rawDelta = consumeUsageDelta(usageDeltaState, lastUsage, totalUsage);
-      const delta = rawDelta && !(ledgerUsage && isLedgerResetSentinel(lastUsage, totalUsage))
+      const delta = rawDelta && !(ledgerUsage && isCodexTotalOnlyResetSentinel(lastUsage, totalUsage))
         ? normalizeUsage(rawDelta, { preserveReportedTotal: ledgerUsage }) : null;
       // Timing consumers receive canonical, deduplicated usage below. A null
       // delta is a snapshot, not another model response.
@@ -1254,7 +1250,6 @@ async function parseCodexRolloutFile(filePath, {
       provider,
       cliVersion,
       forkedFromId,
-      ...(ledgerUsage ? { ledgerReplayState: { currentDate: ledgerCurrentDate, active: ledgerReplayActive, previousTokenMs: ledgerPreviousTokenMs } } : {}),
       parentThreadId,
       threadSource,
       agentNickname,
