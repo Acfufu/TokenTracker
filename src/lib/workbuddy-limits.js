@@ -757,7 +757,11 @@ async function fetchVariant(variantId, opts = {}) {
   const env = scopedEnv(opts.env || process.env, opts.home);
   const workbuddyHome = opts.workbuddyHome || resolveWorkbuddyHome(env, variant.source);
   const installed = directoryExists(workbuddyHome);
-  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  // Sampled when used, not when the fetch starts: the live attempt can spend
+  // the whole provider budget before a cache read or write happens, and a
+  // window whose reset rolled in that span must not be served. An injected
+  // clock (tests) keeps every use on the same instant.
+  const nowMs = () => (Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now());
   // One session selection feeds both the live attempt and the cache identity:
   // cached windows are stamped with (and served only to) the account whose
   // record supplies — or, while the app is closed, would supply — the session
@@ -776,14 +780,14 @@ async function fetchVariant(variantId, opts = {}) {
     // precedent) and a mislabelled host is a configuration fault, not
     // transient data loss: neither may be masked by stale bars.
     if (error?.code === "AUTH_EXPIRED" || error?.code === "EDITION_MISMATCH") throw error;
-    const cached = readWorkbuddyLimitsCache({ home: opts.home, nowMs, variantId, identity });
+    const cached = readWorkbuddyLimitsCache({ home: opts.home, nowMs: nowMs(), variantId, identity });
     if (cached) return cached;
     throw error;
   }
   if (live.configured === true && !live.error) {
     // Live read is current as of now: persist it so a later failure serves
     // stale bars instead of a vanished card.
-    writeWorkbuddyLimitsCache(live, { home: opts.home, nowMs, variantId, identity });
+    writeWorkbuddyLimitsCache(live, { home: opts.home, nowMs: nowMs(), variantId, identity });
     return live;
   }
   if (live.configured === true && live.error) {
@@ -791,7 +795,7 @@ async function fetchVariant(variantId, opts = {}) {
     // unreadable) and transient API/IPC failures. A never-signed-in install
     // ({ configured: false }) stays untouched — an edition that produced no
     // windows here has nothing to fall back to.
-    const cached = readWorkbuddyLimitsCache({ home: opts.home, nowMs, variantId, identity });
+    const cached = readWorkbuddyLimitsCache({ home: opts.home, nowMs: nowMs(), variantId, identity });
     if (cached) return cached;
   }
   return live;
