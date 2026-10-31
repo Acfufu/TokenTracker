@@ -1176,7 +1176,15 @@ function readZcodeLimitsCache({ home, nowMs = Date.now(), providerKeys = [], ide
   return null;
 }
 
-/** Merge partitions into the disk cache atomically; best-effort, never throws. */
+/**
+ * Merge partitions into the disk cache atomically; best-effort, never throws.
+ * Cross-process semantics are last-writer-wins on purpose, matching the house
+ * pattern (ark / qoder / codex caches): a concurrent writer can discard a
+ * partition added between its read and rename, which costs one refresh cycle
+ * — the next fetch rewrites it. Snapshots in particular keep getting
+ * re-persisted on every fetch while their region's rows are inside the scan
+ * window, so a lost write self-heals long before the window expires.
+ */
 function mergeZcodeLimitsCacheEntries(entries, { home } = {}) {
   const cachePath = zcodeLimitsCachePath({ home });
   let payload = {};
@@ -1294,7 +1302,7 @@ function readZcodeLogSnapshotCache(region, { home, nowMs = Date.now() } = {}) {
  * read-only and deliberately carries no reset_credits / start_plan extras —
  * those are login-scoped and must never ride along across regions.
  */
-function withZcodeOtherRegion(result, byRegion, { home, nowMs = Date.now() } = {}) {
+function withZcodeOtherRegion(result, byRegion, { home, env = process.env, nowMs = Date.now() } = {}) {
   if (!result || result.error || !result.region) return result;
   const otherRegion = result.region === "bigmodel" ? "zai" : "bigmodel";
   const record = byRegion instanceof Map ? byRegion.get(otherRegion) : null;
@@ -1310,6 +1318,9 @@ function withZcodeOtherRegion(result, byRegion, { home, nowMs = Date.now() } = {
       },
     };
   }
+  // Saved snapshots are log-derived data, so the log-fallback kill switch
+  // silences them along with the scan that feeds them.
+  if (env?.TOKENTRACKER_ZCODE_DISABLE_LOG_FALLBACK === "1") return result;
   const snapshot = readZcodeLogSnapshotCache(otherRegion, { home, nowMs });
   if (!snapshot) return result;
   return { ...result, other_region: snapshot };
@@ -1382,7 +1393,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
   const selectLogFallback = (errors) => {
     const record = logScan.preferred
       || (requireProviderMatch && authCandidates.length > 0 ? null : logScan.fallback);
-    return withZcodeOtherRegion(zcodeLogFallbackResult(record, errors), logScan.byRegion, { home, nowMs });
+    return withZcodeOtherRegion(zcodeLogFallbackResult(record, errors), logScan.byRegion, { home, env, nowMs });
   };
   if (!authCandidates.length) {
     return selectLogFallback([]) || { configured: false };
@@ -1498,13 +1509,13 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
           }
         }
       }
-      return withZcodeOtherRegion(result, logScan.byRegion, { home, nowMs });
+      return withZcodeOtherRegion(result, logScan.byRegion, { home, env, nowMs });
     } catch (error) {
       errors.push(`${auth.providerKey}: ${error?.message || "Unknown error"}`);
       partitionFailures.push({ providerKey: auth.providerKey, authError: error?.authError === true });
     }
   }
-  if (emptySuccess) return withZcodeOtherRegion(emptySuccess, logScan.byRegion, { home, nowMs });
+  if (emptySuccess) return withZcodeOtherRegion(emptySuccess, logScan.byRegion, { home, env, nowMs });
   // Rank fallback partitions in live candidate priority order, and withhold
   // any partition whose attempts all ended in auth errors: re-login is
   // actionable, so neither a stale log record nor stale cache bars may mask
@@ -1523,7 +1534,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
   // A log record for a provider with no live candidate is untouched by this
   // gate: nothing was attempted for it, so no error is being masked.
   if (logRecord && !authErrorOnlyProviders.has(logRecord.providerKey)) {
-    return withZcodeOtherRegion(zcodeLogFallbackResult(logRecord, errors), logScan.byRegion, { home, nowMs });
+    return withZcodeOtherRegion(zcodeLogFallbackResult(logRecord, errors), logScan.byRegion, { home, env, nowMs });
   }
   // Last stop before the error result: serve the disk cache in live candidate
   // priority order, scoped to the login that produced the windows so an
@@ -1535,7 +1546,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     identityByKey.get(auth.providerKey).add(zcodeCacheIdentity(loginIdFor(zcodeProviderFamily(auth.providerKey)), auth.teamContext));
   }
   const cached = readZcodeLimitsCache({ home, nowMs, providerKeys: cacheEligible, identityByKey });
-  if (cached) return withZcodeOtherRegion(cached, logScan.byRegion, { home, nowMs });
+  if (cached) return withZcodeOtherRegion(cached, logScan.byRegion, { home, env, nowMs });
   return {
     configured: true,
     error: errors[0] || "Unknown error",

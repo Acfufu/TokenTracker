@@ -2145,6 +2145,18 @@ describe("ZCode other-region log snapshot", () => {
     try {
       const v2 = writeZcodeCodingPlanConfig(tmp, "bigmodel");
       writeZcodeBalanceLog(v2, "2026-07-08 09:08:30.077", { providerId: "account:zai-start-plan" });
+      // Even a snapshot persisted by an earlier fetch stays silent: saved
+      // snapshots are log-derived data, so the kill switch covers them too.
+      const snapshotAtMs = new Date(2026, 6, 8, 9, 0, 0).getTime();
+      writeZcodeLogSnapshotCache(
+        new Map([["zai", {
+          body: balanceBody(),
+          providerKey: "account:zai-start-plan",
+          timestampMs: snapshotAtMs,
+          log_timestamp: new Date(snapshotAtMs).toISOString(),
+        }]]),
+        { home: tmp, nowMs: snapshotAtMs },
+      );
       const result = await fetchZcodeLimits({
         home: tmp,
         env: {
