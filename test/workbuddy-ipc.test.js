@@ -73,9 +73,12 @@ test("international quota uses only its own proxy and preserves a native English
 
 test("the limits aggregation retains Free and cancels IPC when the provider budget expires", async (t) => {
   const broker = await createWorkbuddyBroker(t, { respond: quotaResponse });
+  // Fixed clock before the fixture's cycle end (2027-10-31): the disk-cache
+  // fallback asserted below must never depend on the wall clock (#951 class).
   const options = {
     home: broker.root, env: { HOME: broker.root, WORKBUDDY_HOME: broker.home },
     trackerDir: path.join(broker.root, "tracker"), providerTimeoutMs: 1000,
+    nowMs: Date.parse("2026-07-08T00:00:00Z"),
     securityRunner: () => ({ status: 1, stdout: "" }),
     commandRunner: () => ({ status: 1, stdout: "" }),
     fetchImpl: async () => ({ ok: false, status: 401, headers: { get: () => null }, json: async () => ({}) }),

@@ -250,13 +250,24 @@ function withWorkbuddyProviderTimeout(start, label, timeoutMs, graceMs = 2_000) 
   const work = start(controller.signal);
   let timeoutTimer;
   let graceTimer;
+  let deadlineFired = false;
+  // Once the budget aborts the attempt, any rejection it produces is the
+  // deadline's doing — the IPC socket fails with its cancellation error, a
+  // fetch with an AbortError — so report the labeled timeout instead of the
+  // symptom. A post-abort resolution still wins the grace race (the
+  // disk-cache fallback).
+  const guardedWork = work.catch((error) => {
+    if (deadlineFired) throw new Error(`${label} usage request timed out.`);
+    throw error;
+  });
   const timeoutPromise = new Promise((_, reject) => {
     timeoutTimer = setTimeout(() => {
+      deadlineFired = true;
       controller.abort();
       graceTimer = setTimeout(() => reject(new Error(`${label} usage request timed out.`)), graceMs);
     }, timeoutMs);
   });
-  return Promise.race([work, timeoutPromise]).finally(() => {
+  return Promise.race([guardedWork, timeoutPromise]).finally(() => {
     clearTimeout(timeoutTimer);
     clearTimeout(graceTimer);
     controller.abort();
@@ -4071,8 +4082,9 @@ async function fetchUsageLimitsUncached({
   // here would let an opt-out flipped mid-fetch store a pre-opt-out result in the
   // post-opt-out slot.
   selectionKey,
+  // Injectable clock for tests; production always samples the current time.
+  nowMs = Date.now(),
 } = {}) {
-  const nowMs = Date.now();
 
   const [claudeOauth, claudeSubscription, codexAuth] = await Promise.all([
     Promise.resolve().then(() => readClaudeCodeOauthToken({ platform, securityRunner, home, nowMs })),
@@ -4263,9 +4275,9 @@ async function fetchUsageLimitsUncached({
     // when the provider budget expires; the post-abort grace lets the edition's
     // disk-cache fallback land instead of the bare timeout. Reward credits are
     // not a plan window.
-    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy", providerTimeoutMs)
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal, nowMs }), "WorkBuddy", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy AI", providerTimeoutMs)
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal, nowMs }), "WorkBuddy AI", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     // Public status-page probe (fail-soft, own 5-min cache in provider-status.js).
     // Only probed for configured accounts — without a token the Claude section

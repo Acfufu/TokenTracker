@@ -880,6 +880,17 @@ test("the workbuddy budget still enforces its hard bound", async () => {
   );
 });
 
+test("a rejection the budget's abort caused reports the timeout, not the symptom", async () => {
+  await assert.rejects(
+    withWorkbuddyProviderTimeout((signal) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => {
+        setTimeout(() => reject(new Error("WorkBuddy quota request was cancelled.")), 10);
+      });
+    }), "WorkBuddy", 20),
+    /timed out/,
+  );
+});
+
 test("an attempt that settles inside the workbuddy budget is served as-is", async () => {
   const result = await withWorkbuddyProviderTimeout(async () => "live", "WorkBuddy", 30_000);
   assert.equal(result, "live");
