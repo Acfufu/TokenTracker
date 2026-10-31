@@ -1017,6 +1017,27 @@ describe("UsageLimitsPanel", () => {
     expect(screen.queryByText(copy("limits.label.qoder_addon_credits"))).not.toBeInTheDocument();
   });
 
+  it("shows WorkBuddy-style inline credit detail on expanded Qoder and Qoder CN rows", async () => {
+    const data = {
+      configured: true,
+      primary_window: { used_percent: 25, used_credits: 25, limit_credits: 100, remaining_credits: 75 },
+      secondary_window: { used_percent: 40, used_credits: 80, limit_credits: 200, remaining_credits: 120, unit: "calls" },
+      tertiary_window: { used_percent: 36.55, used_credits: 2206.96999938, limit_credits: 6038, remaining_credits: 3831.03000062 },
+    };
+    render(<UsageLimitsPanel qoder={data} qoderCn={data} order={["qoder", "qoderCn"]} />);
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Qoder Credits/ }), { key: "Enter" });
+    // The spec pins creditPrecision: 2, so fractional add-on credits ≥ 100
+    // keep two decimals instead of the default integer rounding; calls skip
+    // digit grouping and switch to the calls wording.
+    await waitFor(() => expect(screen.getByText("25 / 100 credits used · 75 left")).toBeVisible());
+    expect(screen.getByText("2,206.97 / 6,038 credits used · 3,831.03 left")).toBeInTheDocument();
+    expect(screen.getByText("80 / 200 calls used · 120 left")).toBeInTheDocument();
+    // Only one card expands at a time: switching to Qoder CN collapses Qoder,
+    // and the CN card renders the same inline detail for its windows.
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Qoder CN Credits/ }), { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("25 / 100 credits used · 75 left")).toBeVisible());
+  });
+
   it("drops Qoder windows with no quota instead of rendering empty bars", () => {
     const data = {
       configured: true,
