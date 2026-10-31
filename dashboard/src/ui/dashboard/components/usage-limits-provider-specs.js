@@ -2,6 +2,15 @@ import { copy } from "../../../lib/copy";
 
 /** Window + optional extra metadata for UsageLimitsPanel (no JSX — keeps hardcode scan clean). */
 
+// Qoder reports an empty 0/0 bucket for a plan-less account or a missing
+// add-on pack. The row carries no quota to read and would render as a full
+// bar in remaining mode, so it is dropped like a missing window (the panel
+// already shows its no-data state when every row drops out).
+function dropEmptyQoderWindow(window) {
+  if (!window) return null;
+  return Number(window.limit_credits) === 0 ? null : window;
+}
+
 export const PROVIDER_LIMIT_SPECS = {
   claude: {
     windows(data) {
@@ -191,7 +200,8 @@ export const PROVIDER_LIMIT_SPECS = {
   qoder: {
     windows(data) {
       return [
-        { key: "credits", labelKey: "limits.label.qoder_credits", window: data.primary_window },
+        { key: "credits", labelKey: "limits.label.qoder_credits", window: dropEmptyQoderWindow(data.primary_window) },
+        { key: "addon", labelKey: "limits.label.qoder_addon_credits", window: dropEmptyQoderWindow(data.tertiary_window) },
         {
           key: "ultimate",
           labelKey: "limits.label.qoder_ultimate",
@@ -204,8 +214,8 @@ export const PROVIDER_LIMIT_SPECS = {
   qoderCn: {
     windows(data) {
       return [
-        { key: "credits", labelKey: "limits.label.qoder_cn_credits", window: data.primary_window },
-        { key: "addon", labelKey: "limits.label.qoder_cn_addon_credits", window: data.tertiary_window },
+        { key: "credits", labelKey: "limits.label.qoder_cn_credits", window: dropEmptyQoderWindow(data.primary_window) },
+        { key: "addon", labelKey: "limits.label.qoder_cn_addon_credits", window: dropEmptyQoderWindow(data.tertiary_window) },
         {
           key: "ultimate",
           labelKey: "limits.label.qoder_cn_ultimate",
@@ -262,11 +272,21 @@ export const PROVIDER_LIMIT_SPECS = {
     },
   },
   workbuddy: {
-    // Subscription plan credits only. Reward grants are not a window.
+    // One row per signed-in edition, mirroring the desktop app's split: the
+    // subscription plan's base credits on the plan cycle, plus one pooled
+    // resource-package window for every non-plan credit group (gift, top-up,
+    // platform rewards). An empty 0/0 pool yields no window and drops out.
     windows(data) {
       return [
         { key: "plan", labelKey: "limits.label.workbuddy_plan", window: data.primary_window, creditPrecision: 2, showCreditDetail: true },
+        { key: "addon", labelKey: "limits.label.workbuddy_addon", window: data.secondary_window, creditPrecision: 2, showCreditDetail: true },
       ];
+    },
+  },
+  // WorkBuddy AI publishes the same two-window shape as the China edition.
+  workbuddyAi: {
+    windows(data) {
+      return PROVIDER_LIMIT_SPECS.workbuddy.windows(data);
     },
   },
 };
@@ -364,5 +384,7 @@ export function usageLimitsLabelCopyAnchor() {
     copy("limits.label.ark_agent_plan_monthly"),
     copy("limits.label.devin_daily"),
     copy("limits.label.devin_weekly"),
+    copy("limits.label.workbuddy_plan"),
+    copy("limits.label.workbuddy_addon"),
   ];
 }

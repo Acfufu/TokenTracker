@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, Gift, Clock as ClockIcon, Infinity as InfinityIcon } from "lucide-react";
+import { AlertCircle, ChevronDown, Gift, Globe, Clock as ClockIcon, Infinity as InfinityIcon } from "lucide-react";
 import { FadeIn } from "../../foundation/FadeIn.jsx";
 import { copy, getCopyLocale } from "../../../lib/copy";
 import { LIMIT_DISPLAY_MODES } from "../../../hooks/use-limits-display-prefs.js";
@@ -696,9 +696,27 @@ const ZCODE_RESET_COUNTDOWN_SCALES_MS = {
   weekly: 7 * 24 * 3600 * 1000,
 };
 
+// Clean-zero visibility gate shared by renderProviderExtra and
+// ZcodeResetBankSection: mirror the Codex reset bank (`buildResetBankRows`)
+// and hide on a clean zero, while a fetch failure always counts as content so
+// the error cannot hide behind the collapse toggle (issue 888).
+// A plain loop, not an arrow chain: the ui-hardcode scanner's `>...<` regex
+// would read an unbraced arrow body here as raw JSX text.
+function zcodeResetBankHasContent(data, now) {
+  if (!data || typeof data !== "object") return false;
+  if (data.error) return true;
+  for (const key of ["five_hour", "weekly"]) {
+    for (const card of data[key] || []) {
+      if (Date.parse(card?.expires_at) > now) return true;
+    }
+  }
+  return false;
+}
+
 function ZcodeResetBankSection({ data }) {
   const [open, setOpen] = useState(false);
   const now = Date.now();
+  if (!zcodeResetBankHasContent(data, now)) return null;
   const groups = [
     { key: "five_hour", label: copy("limits.label.zcode_5h") },
     { key: "weekly", label: copy("limits.label.zcode_weekly") },
@@ -729,7 +747,11 @@ function ZcodeResetBankSection({ data }) {
   // A plain loop, not `reduce`: an unbraced arrow body would let the
   // ui-hardcode scanner's `>...<` regex read this line as raw JSX text.
   let totalLive = 0;
-  for (const group of groups) totalLive += group.cards.length;
+  const liveGroups = [];
+  for (const group of groups) {
+    totalLive += group.cards.length;
+    if (group.cards.length) liveGroups.push(group);
+  }
   return (
     <div className="mt-2 border-t border-oai-gray-200/60 pt-2 dark:border-oai-gray-800">
       <button
@@ -755,7 +777,7 @@ function ZcodeResetBankSection({ data }) {
       ) : null}
       {open && !data.error ? (
         <div className="mt-2 flex flex-col gap-1.5">
-          {groups.map((group) => (
+          {liveGroups.map((group) => (
             <div key={group.key} className="flex items-center gap-2 text-[11px]">
               <span
                 data-limit-label=""
@@ -794,7 +816,11 @@ function ZcodeResetBankSection({ data }) {
 
 function renderProviderExtra(kind, data) {
   if (kind === "zcode_reset_bank") {
-    return data.reset_credits ? <ZcodeResetBankSection data={data.reset_credits} /> : null;
+    // Hand LimitWindowSection a real null when the bank is spent: a truthy
+    // element that renders nothing would still suppress the no-data line.
+    return zcodeResetBankHasContent(data.reset_credits, Date.now())
+      ? <ZcodeResetBankSection data={data.reset_credits} />
+      : null;
   }
   if (kind === "codex_meta") {
     // Credit amounts show on hover (LimitBar's title) instead of an
@@ -879,6 +905,53 @@ function ZcodeStartPlanSection({ data, mode, now }) {
   );
 }
 
+// Snapshot of the user's other region (issue 938), read from ZCode's own
+// usage logs: ZCode queries both regions' balances while running, so the data
+// exists even when that region has no credentials on disk to re-fetch with.
+function ZcodeOtherRegionSection({ data, mode, now }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const labelWidth = useWidestLabelWidth(containerRef);
+  const regionName = copy(data.region === "zai" ? "limits.zcode.region.zai" : "limits.zcode.region.bigmodel");
+  const planLabel = data.plan_label || copy("limits.zcode.start_grants");
+  const title = copy("limits.zcode.other_region.title", { region: regionName, plan: planLabel });
+  const rows = PROVIDER_LIMIT_SPECS.zcode.windows(data)
+    .filter((s) => s.window)
+    .map((s) => ({ spec: s, mode, pace: paceForSpec(s, mode, now) }));
+  const snapshotMs = Date.parse(data.log_timestamp);
+  return (
+    <div className="mt-2 border-t border-oai-gray-200/60 pt-2 dark:border-oai-gray-800">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}
+        onKeyDown={(event) => event.stopPropagation()}
+        className="flex w-full items-center gap-1.5 rounded text-xs text-oai-gray-500 transition-colors hover:text-oai-gray-800 dark:text-oai-gray-400 dark:hover:text-oai-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+      >
+        <Globe size={13} aria-hidden />
+        <span className="min-w-0 truncate" title={title}>{title}</span>
+        <ChevronDown size={13} aria-hidden className={`ml-auto transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? (
+        <div
+          ref={containerRef}
+          data-limit-label-group=""
+          className="mt-2 flex flex-col gap-1.5"
+          style={labelWidth > 0 ? { "--tt-limits-label-w": `${labelWidth}px` } : undefined}
+        >
+          <LimitWindowSection rows={rows} mode={mode} />
+          <LimitDetail rows={rows} mode={mode} now={now} />
+          {Number.isFinite(snapshotMs) ? (
+            <StatusLine>
+              {copy("limits.zcode.other_region.snapshot", { time: formatExactReset(snapshotMs) })}
+            </StatusLine>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function renderConfiguredProvider(id, data, title, mode, expanded, onToggle, badge = null, subscription = null, now = Date.now(), onKeySaved = null) {
   const spec = PROVIDER_LIMIT_SPECS[id];
   if (!spec) return null;
@@ -912,6 +985,9 @@ function renderConfiguredProvider(id, data, title, mode, expanded, onToggle, bad
       ) : null}
       {id === "zcode" && data.start_plan?.configured ? (
         <ZcodeStartPlanSection data={data.start_plan} mode={mode} now={now} />
+      ) : null}
+      {id === "zcode" && data.other_region ? (
+        <ZcodeOtherRegionSection data={data.other_region} mode={mode} now={now} />
       ) : null}
     </ToolGroup>
   );
@@ -1490,14 +1566,13 @@ function useWidestLabelWidth(containerRef) {
   return labelWidth;
 }
 
-export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, commandCode, qoder, qoderCn, codingPlan, agentPlan, devin, workbuddy, order, visibility, displayMode, subscriptions = [], showSubscriptions = true, onProviderKeySaved = null }) {
-  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, commandCode, qoder, qoderCn, codingPlan, agentPlan, devin, workbuddy };
+export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, commandCode, qoder, qoderCn, codingPlan, agentPlan, devin, workbuddy, workbuddyAi, order, visibility, displayMode, subscriptions = [], showSubscriptions = true, onProviderKeySaved = null }) {
+  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, commandCode, qoder, qoderCn, codingPlan, agentPlan, devin, workbuddy, workbuddyAi };
   const containerRef = useRef(null);
   const labelWidth = useWidestLabelWidth(containerRef);
   const [expandedId, setExpandedId] = useState(null);
   const [now, setNow] = useState(() => Date.now());
-  const effectiveOrder = [...new Set((Array.isArray(order) && order.length > 0 ? order : DEFAULT_ORDER)
-    .map((id) => id === "workbuddyAi" ? "workbuddy" : id))];
+  const effectiveOrder = [...new Set(Array.isArray(order) && order.length > 0 ? order : DEFAULT_ORDER)];
   const effectiveMode = displayMode === LIMIT_DISPLAY_MODES.REMAINING
     ? LIMIT_DISPLAY_MODES.REMAINING
     : LIMIT_DISPLAY_MODES.USED;

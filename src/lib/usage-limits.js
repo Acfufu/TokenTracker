@@ -35,7 +35,7 @@ const { fetchDevinLimits } = require("./devin-limits");
 const { fetchQoderLimits, fetchQoderCnLimits } = require("./qoder-limits");
 const { fetchArkCodingPlanLimits } = require("./ark-coding-plan-limits");
 const { fetchArkAgentPlanLimits } = require("./ark-agent-plan-limits");
-const { fetchWorkbuddyLimits, fetchWorkbuddyAiLimits, selectWorkbuddyLimits } = require("./workbuddy-limits");
+const { fetchWorkbuddyLimits, fetchWorkbuddyAiLimits } = require("./workbuddy-limits");
 const { fetchProviderServiceStatus } = require("./provider-status");
 const { resolveKimiProfile } = require("./kimi-profile");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
@@ -3938,7 +3938,7 @@ function normalizePlanLabel(raw, brand) {
   let s = String(raw).replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!s) return null;
   const lower = s.toLowerCase();
-  if (["free", "none", "unknown"].includes(lower)) return null;
+  if (["free", "none", "unknown", "invalid"].includes(lower)) return null;
   if (brand && lower === brand.toLowerCase()) return null; // e.g. Kiro defaults plan_name to "Kiro" when parse fails
   if (brand) {
     s = s.replace(new RegExp("^" + brand + "\\s+", "i"), "").trim();
@@ -4506,8 +4506,10 @@ async function fetchUsageLimitsUncached({
     codingPlan: withPlanLabel(codingPlan, codingPlan?.plan_label, "Ark Coding Plan"),
     agentPlan: withPlanLabel(agentPlan, agentPlan?.plan_label, "Ark Agent Plan"),
     // WorkBuddy preserves provider English names and official edition labels
-    // verbatim (including Free, STANDARD and Pro-Trial).
-    workbuddy: selectWorkbuddyLimits(workbuddy, workbuddyAi),
+    // verbatim (including Free, STANDARD and Pro-Trial). China and AI publish
+    // as separate providers — one row per signed-in edition, never merged.
+    workbuddy,
+    workbuddyAi,
   };
 
   for (const [providerName, provider] of Object.entries(data)) {

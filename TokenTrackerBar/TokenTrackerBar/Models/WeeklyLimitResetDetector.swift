@@ -41,6 +41,7 @@ enum LimitResetProviderIconCatalog {
         case "agentPlan": return "volcano-ark.svg"
         case "devin": return "devin.svg"
         case "workbuddy": return "codebuddy.svg"
+        case "workbuddyAi": return "codebuddy.svg"
         default: return nil
         }
     }
@@ -261,12 +262,14 @@ extension UsageLimitsResponse {
         if let qoder {
             addGeneric("qoder", qoder.configured, qoder.error, [
                 ("primary", Strings.qoderPlanLabel, qoder.primaryWindow),
+                ("tertiary", Strings.qoderAddonLabel, qoder.tertiaryWindow),
                 ("secondary", Strings.qoderBonusLabel, qoder.secondaryWindow),
             ])
         }
         if let qoderCn {
             addGeneric("qoderCn", qoderCn.configured, qoderCn.error, [
                 ("primary", Strings.qoderPlanLabel, qoderCn.primaryWindow),
+                ("tertiary", Strings.qoderAddonLabel, qoderCn.tertiaryWindow),
                 ("secondary", Strings.qoderBonusLabel, qoderCn.secondaryWindow),
             ])
         }
@@ -293,6 +296,13 @@ extension UsageLimitsResponse {
         if let workbuddy {
             addGeneric("workbuddy", workbuddy.configured, workbuddy.error, [
                 ("primary", Strings.workbuddyPlanLabel, workbuddy.primaryWindow),
+                ("secondary", Strings.workbuddyAddonLabel, workbuddy.secondaryWindow),
+            ])
+        }
+        if let workbuddyAi {
+            addGeneric("workbuddyAi", workbuddyAi.configured, workbuddyAi.error, [
+                ("primary", Strings.workbuddyPlanLabel, workbuddyAi.primaryWindow),
+                ("secondary", Strings.workbuddyAddonLabel, workbuddyAi.secondaryWindow),
             ])
         }
 

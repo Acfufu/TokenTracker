@@ -73,6 +73,7 @@ struct UsageLimitsView: View {
         "agentPlan": "VolcanoArkLogo",
         "devin": "DevinLogo",
         "workbuddy": "CodeBuddyLogo",
+        "workbuddyAi": "CodeBuddyLogo",
     ]
 
     var body: some View {
@@ -230,6 +231,10 @@ struct UsageLimitsView: View {
         case "workbuddy":
             if let workbuddy = limits.workbuddy, workbuddy.configured, workbuddy.error == nil {
                 return toolSection(id: id, title: planTitle("WorkBuddy", workbuddy.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy", specs: workbuddySpecs(workbuddy), updatedAtISO: workbuddy.cachedAt, isStale: workbuddy.stale ?? false)
+            }
+        case "workbuddyAi":
+            if let workbuddyAi = limits.workbuddyAi, workbuddyAi.configured, workbuddyAi.error == nil {
+                return toolSection(id: id, title: planTitle("WorkBuddy AI", workbuddyAi.planLabel), assetName: "CodeBuddyLogo", toolName: "WorkBuddy AI", specs: workbuddySpecs(workbuddyAi), updatedAtISO: workbuddyAi.cachedAt, isStale: workbuddyAi.stale ?? false)
             }
         default:
             break
@@ -597,8 +602,17 @@ struct UsageLimitsView: View {
 
     private func workbuddySpecs(_ w: WorkbuddyLimits) -> [LimitWindowSpec] {
         var specs: [LimitWindowSpec] = []
-        if let window = w.primaryWindow {
+        // Empty 0/0 windows (no active plan / no resource credit) have no
+        // quota to read and would render as a full bar in remaining mode —
+        // drop them like a missing window. An exhausted plan (total > 0,
+        // remain 0) stays visible at 100%.
+        if let window = w.primaryWindow, window.limitCredits != 0 {
             var spec = makeSpec(Strings.workbuddyPlanLabel, window.usedPercent, iso: window.resetAt)
+            spec.creditsDetail = window.creditsDetail
+            specs.append(spec)
+        }
+        if let window = w.secondaryWindow, window.limitCredits != 0 {
+            var spec = makeSpec(Strings.workbuddyAddonLabel, window.usedPercent, iso: window.resetAt)
             spec.creditsDetail = window.creditsDetail
             specs.append(spec)
         }
@@ -614,8 +628,14 @@ struct UsageLimitsView: View {
 
     private func qoderSpecs(_ q: QoderLimits) -> [LimitWindowSpec] {
         var specs: [LimitWindowSpec] = []
-        if let window = q.primaryWindow {
+        // Empty 0/0 buckets (no active plan / no add-on pack) have no quota to
+        // read and would render as a full bar in remaining mode — drop them
+        // like a missing window. Windows without credit fields are kept.
+        if let window = q.primaryWindow, window.limitCredits != 0 {
             specs.append(makeSpec(Strings.qoderPlanLabel, window.usedPercent, iso: window.resetAt))
+        }
+        if let window = q.tertiaryWindow, window.limitCredits != 0 {
+            specs.append(makeSpec(Strings.qoderAddonLabel, window.usedPercent, iso: window.resetAt))
         }
         if let window = q.secondaryWindow {
             specs.append(makeSpec(Strings.qoderBonusLabel, window.usedPercent, iso: window.resetAt))
@@ -861,7 +881,7 @@ struct UsageLimitsView: View {
         )
     }
 
-    /// True when ZCode reset inventory should occupy space (error banner or any group).
+    /// True when ZCode reset inventory should occupy space (error banner or any live group).
     private func zcodeResetBankHasContent(_ resetCredits: ZcodeResetCredits?) -> Bool {
         guard let resetCredits else { return false }
         if let error = resetCredits.error, !error.isEmpty { return true }
@@ -921,6 +941,10 @@ struct UsageLimitsView: View {
                 earliestHelp: help.isEmpty ? nil : help
             )
         }
+        // Zero-count windows drop out, matching the Codex reset bank
+        // (codexResetRows): a "0 available" row carries no information, and an
+        // all-empty inventory lets zcodeResetBankHasContent hide the section.
+        .filter { $0.count > 0 }
     }
 
     @ViewBuilder
