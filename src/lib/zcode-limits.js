@@ -151,6 +151,16 @@ function loadZcodeSelectedPlans({ home, env } = {}) {
 }
 
 /**
+ * Plan class ("start" | "coding") a plan id like "start-plan" or
+ * "individual-coding-plan" serves; null for anything else. Per-account
+ * spellings (`individual-`/`team-coding-plan`) and the builtin
+ * `coding-plan` both serve the same coding plan.
+ */
+function zcodePlanKindFromPlanId(planId) {
+  return /coding-plan$/.test(planId) ? "coding" : planId === "start-plan" ? "start" : null;
+}
+
+/**
  * ZCode 3.14+ records the chosen plan per family as `providerFamilyConnectionSelections`
  * (`{ zai: { kind: "individual-coding-plan" } }`) instead of `modelProviderFamilySelectedKeys`.
  * Team scope for these selections lives on the account credential, not here.
@@ -161,7 +171,7 @@ function loadZcodeConnectionSelectedPlans(selections, domain) {
   const out = [];
   for (const family of families) {
     const kind = typeof selections[family]?.kind === "string" ? selections[family].kind : "";
-    const planKind = /coding-plan$/.test(kind) ? "coding" : kind === "start-plan" ? "start" : null;
+    const planKind = zcodePlanKindFromPlanId(kind);
     if (!planKind) continue;
     const providerKey = `builtin:${family}-${planKind}-plan`;
     if (out.some((plan) => plan.providerKey === providerKey)) continue;
@@ -274,6 +284,31 @@ function parseZcodeAccountProviderCredentialName(name) {
 /** Region ("bigmodel" | "zai") a built-in plan provider belongs to. */
 function zcodeProviderFamily(providerKey) {
   return providerKey === "builtin:zai-coding-plan" || providerKey === "builtin:zai-start-plan" ? "zai" : "bigmodel";
+}
+
+/**
+ * Region ("bigmodel" | "zai") for any ZCode provider id, or null when the id
+ * names neither region. Covers the built-in plan keys and the 3.14+ per-account
+ * ids ZCode writes into its own logs (`account:<family>-<plan>…`).
+ * @returns {"bigmodel" | "zai" | null}
+ */
+function zcodeRegionFromProviderId(providerKey) {
+  const match = typeof providerKey === "string" ? providerKey.match(/^(?:builtin|account):(bigmodel|zai)-/) : null;
+  return match ? match[1] : null;
+}
+
+/**
+ * Plan class ("start" | "coding") for any ZCode provider id, or null when the
+ * id names no known plan. Mirrors {@link zcodeRegionFromProviderId}: covers the
+ * built-in plan keys and the 3.14+ per-account ids ZCode writes into its own
+ * logs (`account:<family>-<plan>…`).
+ * @returns {"start" | "coding" | null}
+ */
+function zcodePlanKindFromProviderId(providerKey) {
+  const match = typeof providerKey === "string"
+    ? providerKey.match(/^(?:builtin|account):(bigmodel|zai)-(.+)$/)
+    : null;
+  return match ? zcodePlanKindFromPlanId(match[2]) : null;
 }
 
 /**
@@ -947,18 +982,31 @@ function extractZcodeBalanceLogRecord(line) {
   }
 }
 
-function loadLatestZcodeBalanceFromLogs({
-  home,
-  env = process.env,
-  providerKeys = [],
-  nowMs = Date.now(),
-  requireProviderMatch = false,
-} = {}) {
-  if (env.TOKENTRACKER_ZCODE_DISABLE_LOG_FALLBACK === "1") return null;
+/**
+ * One backward pass over the recent ZCode logs (today + yesterday), collecting:
+ *   preferred — freshest record matching the candidate providers. Built-in ids
+ *     must byte-equal a candidate key; the 3.14+ per-account ids
+ *     (`account:<family>-<plan>…`) never do, so they match the exact
+ *     (region, plan kind) pair of one candidate — never the cross product of
+ *     the two traits, so a bigmodel-coding + zai-start candidate list cannot
+ *     adopt a zai coding-plan record.
+ *   fallback  — freshest record of any provider.
+ *   byRegion  — freshest record per region ("bigmodel" | "zai"), for the
+ *     other-region snapshot.
+ * Records outside the age window count nowhere. Every eligible line of both
+ * files is visited and buckets keep the max-timestamp record, since log lines
+ * can land out of timestamp order.
+ */
+function scanZcodeBalanceLogs({ home, env = process.env, providerKeys = [], nowMs = Date.now() } = {}) {
+  const scan = { preferred: null, fallback: null, byRegion: new Map() };
+  if (env.TOKENTRACKER_ZCODE_DISABLE_LOG_FALLBACK === "1") return scan;
   const maxAgeMs = parsePositiveInteger(env.TOKENTRACKER_ZCODE_LOG_MAX_AGE_MS, DEFAULT_ZCODE_LOG_FALLBACK_MAX_AGE_MS);
   const preferredProviders = new Set(providerKeys.filter(Boolean));
-  let preferred = null;
-  let fallback = null;
+  const preferredPairs = new Set(providerKeys.map((key) => {
+    const region = zcodeRegionFromProviderId(key);
+    const planKind = zcodePlanKindFromProviderId(key);
+    return region && planKind ? `${region}:${planKind}` : null;
+  }).filter(Boolean));
   for (const logPath of recentZcodeLogPaths({ home, env, nowMs })) {
     if (!fs.existsSync(logPath)) continue;
     let text = "";
@@ -973,14 +1021,36 @@ function loadLatestZcodeBalanceFromLogs({
       if (!record) continue;
       const ageMs = nowMs - record.timestampMs;
       if (ageMs < 0 || ageMs > maxAgeMs) continue;
-      if (!fallback || record.timestampMs > fallback.timestampMs) fallback = record;
-      if (preferredProviders.has(record.providerKey) && (!preferred || record.timestampMs > preferred.timestampMs)) {
-        preferred = record;
+      if (!scan.fallback || record.timestampMs > scan.fallback.timestampMs) scan.fallback = record;
+      const region = zcodeRegionFromProviderId(record.providerKey);
+      const regionRecord = region ? scan.byRegion.get(region) : null;
+      if (region && (!regionRecord || record.timestampMs > regionRecord.timestampMs)) {
+        scan.byRegion.set(region, record);
+      }
+      const regionMatch = Boolean(region)
+        && record.providerKey.startsWith("account:")
+        && preferredPairs.has(`${region}:${zcodePlanKindFromProviderId(record.providerKey)}`);
+      if (
+        (preferredProviders.has(record.providerKey) || regionMatch)
+        && (!scan.preferred || record.timestampMs > scan.preferred.timestampMs)
+      ) {
+        scan.preferred = record;
       }
     }
   }
-  if (preferred) return preferred;
-  return requireProviderMatch && preferredProviders.size > 0 ? null : fallback;
+  return scan;
+}
+
+function loadLatestZcodeBalanceFromLogs({
+  home,
+  env = process.env,
+  providerKeys = [],
+  nowMs = Date.now(),
+  requireProviderMatch = false,
+} = {}) {
+  const scan = scanZcodeBalanceLogs({ home, env, providerKeys, nowMs });
+  if (scan.preferred) return scan.preferred;
+  return requireProviderMatch && providerKeys.filter(Boolean).length > 0 ? null : scan.fallback;
 }
 
 function zcodeLogFallbackResult(logRecord, errors = []) {
@@ -990,9 +1060,34 @@ function zcodeLogFallbackResult(logRecord, errors = []) {
     error: null,
     source: "zcode-log",
     provider_key: logRecord.providerKey,
+    region: zcodeRegionFromProviderId(logRecord.providerKey),
     log_timestamp: logRecord.log_timestamp,
     provider_errors: errors,
     ...normalizeZcodeBalanceResponse(logRecord.body),
+  };
+}
+
+/**
+ * Attach the freshest logged balance snapshot from the user's other region
+ * (issue #938): ZCode's own usage logs carry both regions' billing data even
+ * when only the active region's credentials are on disk. The snapshot is
+ * read-only and deliberately carries no reset_credits / start_plan extras —
+ * those are login-scoped and must never ride along across regions.
+ */
+function withZcodeOtherRegion(result, byRegion) {
+  if (!result || result.error || !result.region) return result;
+  const otherRegion = result.region === "bigmodel" ? "zai" : "bigmodel";
+  const record = byRegion instanceof Map ? byRegion.get(otherRegion) : null;
+  if (!record) return result;
+  return {
+    ...result,
+    other_region: {
+      source: "zcode-log",
+      region: otherRegion,
+      provider_key: record.providerKey,
+      log_timestamp: record.log_timestamp,
+      ...normalizeZcodeBalanceResponse(record.body),
+    },
   };
 }
 
@@ -1032,6 +1127,9 @@ function loadZcodeLoginScopedTokens(family, auth, { home, env } = {}) {
 
 /**
  * Return normalized quota windows, trying eligible providers and recent billing logs.
+ * The result carries the winning provider's `region` ("bigmodel" | "zai") and, when
+ * ZCode's own logs hold one, an `other_region` snapshot of the second region's plan
+ * (issue #938) — read-only log data, never extended with login-scoped extras.
  * Credentials and internal team routing identifiers are omitted from the result.
  */
 async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now(), providerTimeoutMs } = {}) {
@@ -1040,10 +1138,24 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
     return { configured: false };
   }
   const authCandidates = loadZcodeAuthCandidates({ home, env });
+  // One log pass serves both the failed-candidate fallback and the other
+  // region's snapshot. selectLogFallback keeps the former gate semantics:
+  // builtin: candidates only adopt per-account records carrying the same
+  // (region, plan kind) pair as one of them.
+  const logScan = scanZcodeBalanceLogs({
+    home,
+    env,
+    providerKeys: authCandidates.map((auth) => auth.providerKey),
+    nowMs,
+  });
+  const requireProviderMatch = authCandidates.some((auth) => auth.planKind === "coding-plan");
+  const selectLogFallback = (errors) => {
+    const record = logScan.preferred
+      || (requireProviderMatch && authCandidates.length > 0 ? null : logScan.fallback);
+    return withZcodeOtherRegion(zcodeLogFallbackResult(record, errors), logScan.byRegion);
+  };
   if (!authCandidates.length) {
-    const logFallback = loadLatestZcodeBalanceFromLogs({ home, env, nowMs });
-    if (logFallback) return zcodeLogFallbackResult(logFallback, []);
-    return { configured: false };
+    return selectLogFallback([]) || { configured: false };
   }
   const errors = [];
   let emptySuccess = null;
@@ -1074,6 +1186,7 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
         configured: true,
         error: null,
         provider_key: auth.providerKey,
+        region: zcodeProviderFamily(auth.providerKey),
         ...normalized,
       };
       if (Array.isArray(normalized.buckets) && normalized.buckets.length === 0 && authCandidates.length > 1) {
@@ -1136,20 +1249,14 @@ async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now
           }
         }
       }
-      return result;
+      return withZcodeOtherRegion(result, logScan.byRegion);
     } catch (error) {
       errors.push(`${auth.providerKey}: ${error?.message || "Unknown error"}`);
     }
   }
-  if (emptySuccess) return emptySuccess;
-  const logFallback = loadLatestZcodeBalanceFromLogs({
-    home,
-    env,
-    providerKeys: authCandidates.map((auth) => auth.providerKey),
-    nowMs,
-    requireProviderMatch: authCandidates.some((auth) => auth.planKind === "coding-plan"),
-  });
-  if (logFallback) return zcodeLogFallbackResult(logFallback, errors);
+  if (emptySuccess) return withZcodeOtherRegion(emptySuccess, logScan.byRegion);
+  const logResult = selectLogFallback(errors);
+  if (logResult) return logResult;
   return {
     configured: true,
     error: errors[0] || "Unknown error",
@@ -1167,7 +1274,10 @@ module.exports = {
   loadZcodeCredential,
   loadZcodeLoginAccountId,
   zcodeProviderFamily,
+  zcodeRegionFromProviderId,
+  zcodePlanKindFromProviderId,
   loadLatestZcodeBalanceFromLogs,
+  scanZcodeBalanceLogs,
   resolveZcodeProviderBillingBaseUrl,
   resolveZcodeProviderQuotaUrl,
   loadZcodeAuthCandidates,
