@@ -237,6 +237,32 @@ function withAbortableProviderTimeout(start, label, timeoutMs) {
     .finally(() => controller.abort());
 }
 
+// WorkBuddy bounds its own live chain (the IPC proxy timeout is internal), and
+// its disk-cache fallback runs after the abort lands: the abort makes the
+// socket fail within milliseconds and the cache read is synchronous. A plain
+// provider-timeout race would settle on the timeout first and drop that
+// fallback, so after the budget expires, abort and give the attempt a short
+// grace to land its fallback — its outcome (cache hit or specific error)
+// replaces the generic timeout. The hard bound is timeoutMs + graceMs.
+function withWorkbuddyProviderTimeout(start, label, timeoutMs, graceMs = 2_000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return start(undefined);
+  const controller = new AbortController();
+  const work = start(controller.signal);
+  let timeoutTimer;
+  let graceTimer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutTimer = setTimeout(() => {
+      controller.abort();
+      graceTimer = setTimeout(() => reject(new Error(`${label} usage request timed out.`)), graceMs);
+    }, timeoutMs);
+  });
+  return Promise.race([work, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutTimer);
+    clearTimeout(graceTimer);
+    controller.abort();
+  });
+}
+
 function parseRetryAfterSeconds(headers) {
   const ra = headers?.get ? headers.get("retry-after") : null;
   const sec = ra ? Number.parseInt(ra, 10) : NaN;
@@ -4234,10 +4260,12 @@ async function fetchUsageLimitsUncached({
       ),
     // WorkBuddy CN and WorkBuddy AI are separate editions. Each one calls only
     // its own local authenticated billing proxy. Abort closes the IPC socket
-    // when the provider budget expires. Reward credits are not a plan window.
-    withAbortableProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy", providerTimeoutMs)
+    // when the provider budget expires; the post-abort grace lets the edition's
+    // disk-cache fallback land instead of the bare timeout. Reward credits are
+    // not a plan window.
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    withAbortableProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy AI", providerTimeoutMs)
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal }), "WorkBuddy AI", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     // Public status-page probe (fail-soft, own 5-min cache in provider-status.js).
     // Only probed for configured accounts — without a token the Claude section
@@ -4601,4 +4629,5 @@ module.exports = {
   fetchQoderCnLimits,
   fetchWorkbuddyLimits,
   fetchWorkbuddyAiLimits,
+  withWorkbuddyProviderTimeout,
 };

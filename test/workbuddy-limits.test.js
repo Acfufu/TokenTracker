@@ -18,6 +18,7 @@ const {
   workbuddyLimitsCachePath,
   writeWorkbuddyLimitsCache,
 } = require("../src/lib/workbuddy-limits");
+const { withWorkbuddyProviderTimeout } = require("../src/lib/usage-limits");
 
 const TRIAL = "TCACA_code_008_cfWoLwvjU4";
 const REWARD = "TCACA_code_007_nzdH5h4Nl0";
@@ -544,6 +545,7 @@ test("a live read persists last-good windows per edition without crossing editio
   fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
   const cn = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -552,6 +554,7 @@ test("a live read persists last-good windows per edition without crossing editio
   assert.equal(cn.error, null);
   const ai = await fetchWorkbuddyAiLimits({
     home,
+    nowMs: T0,
     env: { HOME: home, WORKBUDDY_AI_ACCESS_TOKEN: "ai-token" },
     origin: "https://www.workbuddy.ai",
     fetchImpl: summaryFetch({
@@ -588,10 +591,11 @@ test("a live read persists last-good windows per edition without crossing editio
 test("a closed app serves the last-good windows with stale markers", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cache-"));
   const authPath = path.join(home, "workbuddy-desktop.info");
-  fs.writeFileSync(authPath, authFileInfo({ uid: "uid-cn" }));
+  fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
   const live = await fetchWorkbuddyLimits({
     home,
-    env: { HOME: home, WORKBUDDY_ACCESS_TOKEN: "cn-token" },
+    nowMs: T0,
+    env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
     fetchImpl: summaryFetch(CREDIT_GROUPS_SUMMARY),
@@ -600,9 +604,11 @@ test("a closed app serves the last-good windows with stale markers", async () =>
 
   // App closed: the session token is encrypted and unreadable, but the same
   // auth record still names the account that produced the cached windows.
+  fs.writeFileSync(authPath, authFileInfo({ uid: "uid-cn" }));
   const calls = [];
   const cached = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -627,10 +633,11 @@ test("a closed app serves the last-good windows with stale markers", async () =>
 test("an account switch keeps the previous login's windows out of the fallback", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cache-"));
   const authPath = path.join(home, "workbuddy-desktop.info");
-  fs.writeFileSync(authPath, authFileInfo({ uid: "uid-cn" }));
+  fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
   await fetchWorkbuddyLimits({
     home,
-    env: { HOME: home, WORKBUDDY_ACCESS_TOKEN: "cn-token" },
+    nowMs: T0,
+    env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
     fetchImpl: summaryFetch(CREDIT_GROUPS_SUMMARY),
@@ -641,6 +648,7 @@ test("an account switch keeps the previous login's windows out of the fallback",
   fs.writeFileSync(authPath, authFileInfo({ uid: "uid-other" }));
   const switched = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -655,6 +663,7 @@ test("an account switch keeps the previous login's windows out of the fallback",
   fs.writeFileSync(authPath, authFileInfo({ uid: "uid-cn" }));
   const restored = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -672,6 +681,7 @@ test("an edition never falls back to the other edition's cached windows", async 
   fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
   await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -701,6 +711,7 @@ test("auth expiry bypasses the cache so re-login stays visible", async () => {
   fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
   await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -709,6 +720,7 @@ test("auth expiry bypasses the cache so re-login stays visible", async () => {
   await assert.rejects(
     fetchWorkbuddyLimits({
       home,
+      nowMs: T0,
       env: { HOME: home },
       authFiles: [authPath],
       origin: "https://www.workbuddy.cn",
@@ -736,6 +748,7 @@ test("an unreadable account matches only its own cache entries", async () => {
   // No auth record anywhere, so the write is stamped with "unknown".
   await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home, WORKBUDDY_ACCESS_TOKEN: "cn-token" },
     origin: "https://www.workbuddy.cn",
     fetchImpl: summaryFetch(CREDIT_GROUPS_SUMMARY),
@@ -747,6 +760,7 @@ test("an unreadable account matches only its own cache entries", async () => {
   fs.writeFileSync(authPath, authFileInfo({ uid: "uid-cn" }));
   const named = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     authFiles: [authPath],
     origin: "https://www.workbuddy.cn",
@@ -762,6 +776,7 @@ test("an unreadable account matches only its own cache entries", async () => {
   fs.mkdirSync(path.join(home, ".workbuddy"), { recursive: true });
   const unnamed = await fetchWorkbuddyLimits({
     home,
+    nowMs: T0,
     env: { HOME: home },
     origin: "https://www.workbuddy.cn",
     fetchImpl: async () => {
@@ -844,4 +859,37 @@ test("a cached_at in the future beyond the skew guard is not trusted", () => {
   assert.ok(readWorkbuddyLimitsCache({
     home, nowMs: T0 + 10 * 60 * 60 * 1000 - 30_000, variantId: "workbuddy", identity: "uid",
   }));
+});
+
+// The WorkBuddy call site wraps the provider budget so the post-abort
+// disk-cache fallback can land instead of the bare timeout error (the abort
+// fails the IPC socket within milliseconds and the cache read is synchronous).
+test("the workbuddy budget lets the post-abort cache fallback win", async () => {
+  const result = await withWorkbuddyProviderTimeout((signal) => new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      setTimeout(() => resolve("cache-hit"), 10);
+    });
+  }), "WorkBuddy", 20);
+  assert.equal(result, "cache-hit");
+});
+
+test("the workbuddy budget still enforces its hard bound", async () => {
+  await assert.rejects(
+    withWorkbuddyProviderTimeout(() => new Promise(() => {}), "WorkBuddy", 20, 20),
+    /timed out/,
+  );
+});
+
+test("an attempt that settles inside the workbuddy budget is served as-is", async () => {
+  const result = await withWorkbuddyProviderTimeout(async () => "live", "WorkBuddy", 30_000);
+  assert.equal(result, "live");
+});
+
+test("an attempt that rejects inside the workbuddy budget keeps its own error", async () => {
+  await assert.rejects(
+    withWorkbuddyProviderTimeout(async () => {
+      throw new Error("WorkBuddy quota request failed.");
+    }, "WorkBuddy", 30_000),
+    /quota request failed/,
+  );
 });

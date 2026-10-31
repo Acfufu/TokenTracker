@@ -476,15 +476,22 @@ function resolveSession(variant, { env, authFiles, workbuddyHome }) {
     ? authFiles
     : authSearchDirs(env, workbuddyHome).flatMap((dir) => variant.authFileNames.map((name) => path.join(dir, name)));
   let encryptedForVariant = false;
+  let encryptedUid = "";
   for (const filePath of files) {
     if (!filePath) continue;
     const session = readAuthFile(filePath);
     if (!session) continue;
     if (!hostAllowed(hostOf(session.domain), variant.allowedHostSuffixes)) continue;
-    if (session.token) return { token: session.token, encrypted: false, matched: true };
-    if (session.encrypted) encryptedForVariant = true;
+    if (session.token) return { token: session.token, encrypted: false, matched: true, uid: session.uid };
+    if (session.encrypted) {
+      encryptedForVariant = true;
+      // First encrypted candidate wins: when the app is closed this record is
+      // what a live read would authenticate with, so its account is the one
+      // the cached windows must match.
+      encryptedUid = encryptedUid || session.uid;
+    }
   }
-  return { token: null, encrypted: encryptedForVariant, matched: encryptedForVariant };
+  return { token: null, encrypted: encryptedForVariant, matched: encryptedForVariant, uid: encryptedUid };
 }
 
 // ---------------------------------------------------------------------------
@@ -501,41 +508,12 @@ function resolveSession(variant, { env, authFiles, workbuddyHome }) {
 // windows, so an account switch followed by a live failure cannot serve the
 // previous account's bars.
 //
-// The identity is the account uid from the app's own auth record — the same
-// file family the session resolves from, so it reflects who the desktop app
-// is signed in as, and it stays readable after the app closes when the
-// encrypted session token does not. It is an account id, not a credential:
-// nothing secret is persisted or hashed, and an unreadable account
-// ("unknown") matches only its own entries.
-function readWorkbuddyCacheIdentity(variant, { env, authFiles, workbuddyHome } = {}) {
-  let files = [];
-  if (Array.isArray(authFiles)) {
-    files = authFiles;
-  } else {
-    // Session resolution filters candidates by file name because it must not
-    // read tokens from arbitrary files; the uid is not a secret and the
-    // edition boundary is the host allowlist, so scan every auth record and
-    // defer to the first one that names an account. Names are sorted so the
-    // pick does not depend on directory order.
-    for (const dir of authSearchDirs(env, workbuddyHome)) {
-      let entries = [];
-      try {
-        entries = fs.readdirSync(dir);
-      } catch {
-        continue;
-      }
-      files.push(...entries.filter((name) => name.endsWith(".info")).sort().map((name) => path.join(dir, name)));
-    }
-  }
-  for (const filePath of files) {
-    if (!filePath) continue;
-    const session = readAuthFile(filePath);
-    if (!session) continue;
-    if (!hostAllowed(hostOf(session.domain), variant.allowedHostSuffixes)) continue;
-    if (session.uid) return session.uid;
-  }
-  return "unknown";
-}
+// The cache identity comes from the session selection itself (resolveSession):
+// the record whose token supplies — or, while the app is closed, would supply
+// — the live read. It is the app's own account uid, readable after the app
+// closes when the encrypted session token is not, and it is an account id,
+// not a credential: nothing secret is persisted or hashed. An account the
+// records do not name ("unknown") matches only its own entries.
 
 function workbuddyLimitsCachePath({ home } = {}) {
   return path.join(home || os.homedir(), ".tokentracker", "tracker", WORKBUDDY_LIMITS_CACHE_FILE);
@@ -725,10 +703,11 @@ function scopedEnv(env, home) {
 
 // Live chain for one edition, unchanged by the cache layer: the IPC proxy
 // while the app publishes it, then the API source with a resolvable session.
-// Throws propagate to the cache wrapper below; the
-// { configured: true, error: UNAVAILABLE } result comes back when the app is
-// closed and no session can be read.
-async function fetchVariantLive(variant, variantId, { env, workbuddyHome, installed, opts }) {
+// The session is selected by the caller (fetchVariant) so the cache identity
+// and the live read cannot disagree about the account. Throws propagate to
+// the cache wrapper below; the { configured: true, error: UNAVAILABLE }
+// result comes back when the app is closed and no session can be read.
+async function fetchVariantLive(variant, variantId, { env, workbuddyHome, installed, opts, session }) {
   const discovery = readWorkbuddyIpcDiscovery(workbuddyHome);
   if (discovery) {
     // Discovery is edition-local. Never fall back to the other edition's
@@ -750,10 +729,6 @@ async function fetchVariantLive(variant, variantId, { env, workbuddyHome, instal
       client.close();
     }
   }
-  const explicitToken = resolveToken(variant, env);
-  const session = explicitToken
-    ? { token: explicitToken, encrypted: false, matched: true }
-    : resolveSession(variant, { env, authFiles: opts.authFiles, workbuddyHome });
   if (!session.token) {
     if (session.encrypted || installed) return { configured: true, error: UNAVAILABLE };
     if (!installed) return { configured: false };
@@ -783,12 +758,19 @@ async function fetchVariant(variantId, opts = {}) {
   const workbuddyHome = opts.workbuddyHome || resolveWorkbuddyHome(env, variant.source);
   const installed = directoryExists(workbuddyHome);
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const identity = readWorkbuddyCacheIdentity(variant, {
-    env, authFiles: opts.authFiles, workbuddyHome,
-  });
+  // One session selection feeds both the live attempt and the cache identity:
+  // cached windows are stamped with (and served only to) the account whose
+  // record supplies — or, while the app is closed, would supply — the session
+  // token. An env-token session names no record; "unknown" matches only its
+  // own entries.
+  const explicitToken = resolveToken(variant, env);
+  const session = explicitToken
+    ? { token: explicitToken, encrypted: false, matched: true, uid: "" }
+    : resolveSession(variant, { env, authFiles: opts.authFiles, workbuddyHome });
+  const identity = (explicitToken ? "" : session.uid) || "unknown";
   let live;
   try {
-    live = await fetchVariantLive(variant, variantId, { env, workbuddyHome, installed, opts });
+    live = await fetchVariantLive(variant, variantId, { env, workbuddyHome, installed, opts, session });
   } catch (error) {
     // Re-login stays actionable (opencode-go auth_error / codex reauth
     // precedent) and a mislabelled host is a configuration fault, not
@@ -835,7 +817,6 @@ module.exports = {
   readSubscriptionIdentity,
   originAllowed,
   hostAllowed,
-  readWorkbuddyCacheIdentity,
   readWorkbuddyLimitsCache,
   writeWorkbuddyLimitsCache,
   workbuddyLimitsCachePath,
