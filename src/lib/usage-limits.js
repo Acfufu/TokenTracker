@@ -4082,9 +4082,14 @@ async function fetchUsageLimitsUncached({
   // here would let an opt-out flipped mid-fetch store a pre-opt-out result in the
   // post-opt-out slot.
   selectionKey,
-  // Injectable clock for tests; production always samples the current time.
-  nowMs = Date.now(),
+  // Injectable clock for tests. Production leaves it unset so per-provider
+  // cache gates sample the time when they actually run (the live attempt can
+  // spend the whole budget before its fallback reads the cache) instead of
+  // inheriting this fetch's start instant.
+  nowMs,
 } = {}) {
+  const injectedNowMs = Number.isFinite(nowMs) ? nowMs : undefined;
+  nowMs = injectedNowMs ?? Date.now();
 
   const [claudeOauth, claudeSubscription, codexAuth] = await Promise.all([
     Promise.resolve().then(() => readClaudeCodeOauthToken({ platform, securityRunner, home, nowMs })),
@@ -4275,9 +4280,9 @@ async function fetchUsageLimitsUncached({
     // when the provider budget expires; the post-abort grace lets the edition's
     // disk-cache fallback land instead of the bare timeout. Reward credits are
     // not a plan window.
-    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal, nowMs }), "WorkBuddy", providerTimeoutMs)
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyLimits({ home, env, fetchImpl: providerFetch, signal, nowMs: injectedNowMs }), "WorkBuddy", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal, nowMs }), "WorkBuddy AI", providerTimeoutMs)
+    withWorkbuddyProviderTimeout((signal) => fetchWorkbuddyAiLimits({ home, env, fetchImpl: providerFetch, signal, nowMs: injectedNowMs }), "WorkBuddy AI", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     // Public status-page probe (fail-soft, own 5-min cache in provider-status.js).
     // Only probed for configured accounts — without a token the Claude section

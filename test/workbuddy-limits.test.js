@@ -861,6 +861,46 @@ test("a cached_at in the future beyond the skew guard is not trusted", () => {
   }));
 });
 
+// Production forwards no clock into the edition fetch, so the cache gate
+// samples at read time even when the live attempt spends its whole budget.
+test("a window that rolls while the live attempt runs is not served", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cache-"));
+  const authPath = path.join(home, "workbuddy-desktop.info");
+  fs.writeFileSync(authPath, authFileInfo({ token: "cn-token", uid: "uid-cn" }));
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  // Live success writes a plan window whose cycle ends five seconds out.
+  const live = await fetchWorkbuddyLimits({
+    home,
+    env: { HOME: home },
+    authFiles: [authPath],
+    origin: "https://www.workbuddy.cn",
+    fetchImpl: summaryFetch({
+      code: 0,
+      data: {
+        SubscriptionPackageName: "体验版",
+        Packages: [trialRow({ CycleEndTime: "2026-07-08T00:00:05.000Z" })],
+      },
+    }),
+  });
+  assert.equal(live.error, null);
+
+  // The next poll starts while the window is still live; its live attempt
+  // only fails after the budget-sized delay, by which time the cycle rolled.
+  const pending = fetchWorkbuddyLimits({
+    home,
+    env: { HOME: home },
+    authFiles: [authPath],
+    origin: "https://www.workbuddy.cn",
+    fetchImpl: () => new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("offline")), 30_000);
+    }),
+  });
+  t.mock.timers.tick(60_000);
+  // The rolled window is dropped and nothing survives it: the live error
+  // stays visible instead of an expired snapshot.
+  await assert.rejects(pending, /offline/);
+});
+
 // The WorkBuddy call site wraps the provider budget so the post-abort
 // disk-cache fallback can land instead of the bare timeout error (the abort
 // fails the IPC socket within milliseconds and the cache read is synchronous).
