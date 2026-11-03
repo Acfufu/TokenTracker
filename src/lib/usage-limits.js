@@ -31,6 +31,7 @@ const { fetchGrokLimits, grokTokenSubject, loadGrokAuthEntry } = require("./grok
 const {
   createLimitsCache,
   parseTimeMs,
+  readCacheJson,
   withLimitsCacheFallback,
 } = require("./limits-cache");
 const { fetchZcodeLimits } = require("./zcode-limits");
@@ -2607,17 +2608,33 @@ function writeAntigravityLimitsCache(limits, { home, nowMs = Date.now() } = {}) 
 }
 
 function resolveClaudeLimitsCachePath({ home } = {}) {
-  return path.join(home || os.homedir(), ".tokentracker", "tracker", CLAUDE_LIMITS_CACHE_FILE);
+  return claudeLimitsCache.path({ home });
 }
 
-// Claude windows carry their own `resets_at`; a window whose reset has already passed is
-// stale data, not a usable fallback, so drop it. Windows without a reset stamp are kept
-// (the overall cached_at max-age gate already bounds them).
+// Claude windows carry their own `resets_at`; a window whose reset has already
+// passed is stale data, not a usable fallback, so drop it. Windows without a
+// reset stamp are kept (the overall cached_at max-age gate already bounds them).
+const claudeLimitsCache = createLimitsCache({
+  file: CLAUDE_LIMITS_CACHE_FILE,
+  key: "claude",
+  maxAgeMs: CLAUDE_LIMITS_CACHE_MAX_AGE_MS,
+  fields: {
+    extra_usage: { write: (record) => record?.extra_usage || null, read: (raw) => raw?.extra_usage ?? null },
+    // Cached scoped windows are filtered per-entry like the fixed windows: a
+    // scoped window whose reset has passed is stale data, not a usable fallback.
+    weekly_scoped: {
+      write: (record) => (Array.isArray(record?.weekly_scoped) && record.weekly_scoped.length > 0
+        ? record.weekly_scoped
+        : null),
+      read: (raw, ctx) => normalizeClaudeCachedScopedWeekly(raw?.weekly_scoped, { nowMs: ctx.nowMs }),
+    },
+  },
+  windowKeys: ["five_hour", "seven_day", "seven_day_opus"],
+  windowResetField: "resets_at",
+});
+
 function isClaudeCacheWindowUsable(window, { nowMs } = {}) {
-  if (!window || typeof window !== "object") return false;
-  const resetAtMs = parseTimeMs(window.resets_at);
-  if (resetAtMs === null) return true;
-  return resetAtMs > nowMs;
+  return claudeLimitsCache.isWindowUsable(window, { nowMs });
 }
 
 function hasClaudeWindow(limits) {
@@ -2638,6 +2655,8 @@ function normalizeClaudeCachedScopedWeekly(raw, { nowMs } = {}) {
   return usable.length > 0 ? usable : null;
 }
 
+// Parametrized so the fresh pre-fetch gate can read with the 10m TTL and a
+// non-stale annotation while the fallback reads with the 7d bound.
 function normalizeClaudeCachedLimits(
   raw,
   {
@@ -2646,32 +2665,12 @@ function normalizeClaudeCachedLimits(
     stale = true,
   } = {},
 ) {
-  const cachedAtMs = parseTimeMs(raw?.cached_at);
-  if (!Number.isFinite(cachedAtMs)) return null;
-  if (cachedAtMs > nowMs + 60_000) return null;
-  if (nowMs - cachedAtMs > maxAgeMs) return null;
-
-  const cached = {
-    configured: true,
-    error: null,
-    five_hour: isClaudeCacheWindowUsable(raw?.five_hour, { nowMs }) ? raw.five_hour : null,
-    seven_day: isClaudeCacheWindowUsable(raw?.seven_day, { nowMs }) ? raw.seven_day : null,
-    seven_day_opus: isClaudeCacheWindowUsable(raw?.seven_day_opus, { nowMs }) ? raw.seven_day_opus : null,
-    weekly_scoped: normalizeClaudeCachedScopedWeekly(raw?.weekly_scoped, { nowMs }),
-    extra_usage: raw?.extra_usage ?? null,
-    stale,
-    cached_at: raw.cached_at,
-  };
-  return hasClaudeWindow(cached) ? cached : null;
+  return claudeLimitsCache.normalize(raw, { nowMs, maxAgeMs, stale });
 }
 
 function readClaudeLimitsCacheRaw({ home } = {}) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(resolveClaudeLimitsCachePath({ home }), "utf8"));
-    return parsed?.claude ?? null;
-  } catch (_error) {
-    return null;
-  }
+  const parsed = readCacheJson(claudeLimitsCache.path({ home }));
+  return parsed?.claude ?? null;
 }
 
 function readClaudeLimitsCache({
@@ -2783,27 +2782,9 @@ function readFreshClaudeLimitsCache({ home, nowMs = Date.now() } = {}) {
 }
 
 function writeClaudeLimitsCache(limits, { home, nowMs = Date.now() } = {}) {
-  if (!limits?.configured || limits.error || !hasClaudeWindow(limits)) return;
-  const cachePath = resolveClaudeLimitsCachePath({ home });
-  const payload = {
-    claude: {
-      five_hour: limits.five_hour || null,
-      seven_day: limits.seven_day || null,
-      seven_day_opus: limits.seven_day_opus || null,
-      weekly_scoped: Array.isArray(limits.weekly_scoped) && limits.weekly_scoped.length > 0
-        ? limits.weekly_scoped
-        : null,
-      extra_usage: limits.extra_usage || null,
-      cached_at: new Date(nowMs).toISOString(),
-    },
-  };
-  try {
-    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-    const tmpPath = `${cachePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tmpPath, cachePath);
-  } catch (_error) {}
+  claudeLimitsCache.write(limits, { home, nowMs });
 }
+
 
 // Codex windows carry `reset_at` as unix seconds (not an ISO string). A window
 // whose reset has already passed is stale data, not a usable fallback, so drop
@@ -3058,84 +3039,32 @@ function resolveGeminiCacheIdentity({ home, env } = {}) {
   }
 }
 
+const devinLimitsCache = createLimitsCache({
+  file: DEVIN_LIMITS_CACHE_FILE,
+  key: "devin",
+  maxAgeMs: DEVIN_LIMITS_CACHE_MAX_AGE_MS,
+  fields: { plan_label: "string" },
+  windowKeys: ["primary_window", "secondary_window"],
+});
+
 function resolveDevinLimitsCachePath({ home } = {}) {
-  return path.join(home || os.homedir(), ".tokentracker", "tracker", DEVIN_LIMITS_CACHE_FILE);
+  return devinLimitsCache.path({ home });
 }
 
 function hasDevinWindow(limits) {
   return Boolean(limits?.primary_window || limits?.secondary_window);
 }
 
-// Devin windows carry `reset_at` as an ISO string. A window whose reset has
-// already passed is stale data, not a usable fallback, so drop it. Windows
-// without a reset stamp are kept — the overall cached_at max-age gate already
-// bounds them.
-function isDevinCacheWindowUsable(window, { nowMs } = {}) {
-  if (!window || typeof window !== "object") return false;
-  const resetAtMs = parseTimeMs(window.reset_at);
-  if (resetAtMs === null) return true;
-  return resetAtMs > nowMs;
-}
-
-function normalizeDevinCachedLimits(
-  raw,
-  { nowMs = Date.now(), maxAgeMs = DEVIN_LIMITS_CACHE_MAX_AGE_MS } = {},
-) {
-  const cachedAtMs = parseTimeMs(raw?.cached_at);
-  if (!Number.isFinite(cachedAtMs)) return null;
-  if (cachedAtMs > nowMs + 60_000) return null;
-  if (nowMs - cachedAtMs > maxAgeMs) return null;
-
-  const cached = {
-    configured: true,
-    error: null,
-    plan_label: typeof raw?.plan_label === "string" ? raw.plan_label : null,
-    primary_window: isDevinCacheWindowUsable(raw?.primary_window, { nowMs }) ? raw.primary_window : null,
-    secondary_window: isDevinCacheWindowUsable(raw?.secondary_window, { nowMs }) ? raw.secondary_window : null,
-    stale: true,
-    cached_at: raw.cached_at,
-  };
-  return hasDevinWindow(cached) ? cached : null;
-}
-
-// Devin has no locally readable, non-secret identity to partition by: the CLI
-// stores only the session token (hashing it for a label is out — the CodeQL
-// js/insufficient-password-hash precedent), and the provider deliberately
-// never reads the identity-bearing GetUserStatus RPC. The credentials file's
-// single token slot makes the cache single-tenant, mirroring OpenCode Go: one
-// entry, overwritten by the next successful fetch, bounded by the gates above.
 function readDevinLimitsCache({ home, nowMs = Date.now() } = {}) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(resolveDevinLimitsCachePath({ home }), "utf8"));
-    return normalizeDevinCachedLimits(parsed?.devin, { nowMs });
-  } catch (_error) {
-    return null;
-  }
+  return devinLimitsCache.read({ home, nowMs });
 }
 
 function writeDevinLimitsCache(limits, { home, nowMs = Date.now() } = {}) {
-  if (!limits?.configured || limits.error || !hasDevinWindow(limits)) return;
-  const cachePath = resolveDevinLimitsCachePath({ home });
-  const payload = {
-    devin: {
-      plan_label: limits.plan_label || null,
-      primary_window: limits.primary_window || null,
-      secondary_window: limits.secondary_window || null,
-      cached_at: new Date(nowMs).toISOString(),
-    },
-  };
-  try {
-    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-    const tmpPath = `${cachePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tmpPath, cachePath);
-  } catch (_error) {}
+  devinLimitsCache.write(limits, { home, nowMs });
 }
 
 function clearDevinLimitsCache({ home } = {}) {
-  try {
-    fs.rmSync(resolveDevinLimitsCachePath({ home }), { force: true });
-  } catch (_error) {}
+  devinLimitsCache.clear({ home });
 }
 
 // Only transient failures fall back to the disk cache. Requests without a
